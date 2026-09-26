@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/MCCSource/">
+    <Project Path="MCCSource/MinecraftClient/MinecraftClient.csproj" />
+  </Folder>
+  <Folder Name="/MCCSource/ConsoleInteractive/" />
+  <Folder Name="/MCCSource/ConsoleInteractive/ConsoleInteractive/">
+    <Project Path="MCCSource/ConsoleInteractive/ConsoleInteractive/ConsoleInteractive/ConsoleInteractive.csproj" />
+  </Folder>
+  <Project Path="MccX.App/MccX.App.csproj" />
+  <Project Path="MccX.Core/MccX.Core.csproj" />
+  <Project Path="MccX.SmokeTest/MccX.SmokeTest.csproj" />
+</Solution>
