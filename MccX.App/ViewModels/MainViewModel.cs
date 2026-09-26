@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Globalization;
 using System.Windows.Input;
 using MccX.Core;
 using MinecraftClient.Scripting;
@@ -151,6 +152,224 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _session.Dispose();
         _accountStore.Dispose();
     }
+
+    #region 自动化（需求 3.2）
+
+    private bool _attackEnabled;
+    private string _attackRange = "3.0";
+    private string _attackCooldownMin = "800";
+    private string _attackCooldownMax = "1600";
+
+    private bool _mouseEnabled;
+    private int _mouseModeIndex = (int)MouseMode.IntervalClick;
+    private int _mouseSideIndex = (int)MouseSide.Right;
+    private string _mouseHoldMs = "1000";
+    private string _mouseIntervalMs = "600";
+    private string _mouseJitterPercent = "20";
+
+    private bool _fishingEnabled;
+
+    private bool _reconnectEnabled = true;
+    private string _reconnectAttempts = "5";
+    private string _reconnectDelayMs = "3000";
+
+    /// <summary>自动砍怪开关。</summary>
+    public bool AttackEnabled
+    {
+        get => _attackEnabled;
+        set
+        {
+            if (SetProperty(ref _attackEnabled, value))
+                ApplyAttack();
+        }
+    }
+
+    /// <summary>攻击距离（格，1-4）。</summary>
+    public string AttackRange
+    {
+        get => _attackRange;
+        set
+        {
+            if (SetProperty(ref _attackRange, value))
+                ApplyAttack();
+        }
+    }
+
+    /// <summary>攻击冷却下限（毫秒）。</summary>
+    public string AttackCooldownMin
+    {
+        get => _attackCooldownMin;
+        set
+        {
+            if (SetProperty(ref _attackCooldownMin, value))
+                ApplyAttack();
+        }
+    }
+
+    /// <summary>攻击冷却上限（毫秒）。</summary>
+    public string AttackCooldownMax
+    {
+        get => _attackCooldownMax;
+        set
+        {
+            if (SetProperty(ref _attackCooldownMax, value))
+                ApplyAttack();
+        }
+    }
+
+    /// <summary>鼠标按键控制开关。</summary>
+    public bool MouseEnabled
+    {
+        get => _mouseEnabled;
+        set
+        {
+            if (SetProperty(ref _mouseEnabled, value))
+                ApplyMouse();
+        }
+    }
+
+    /// <summary>鼠标模式：0 长按 / 1 间隔点击 / 2 间隔长按。</summary>
+    public int MouseModeIndex
+    {
+        get => _mouseModeIndex;
+        set
+        {
+            if (SetProperty(ref _mouseModeIndex, value))
+                ApplyMouse();
+        }
+    }
+
+    /// <summary>鼠标按键：0 左键 / 1 右键。</summary>
+    public int MouseSideIndex
+    {
+        get => _mouseSideIndex;
+        set
+        {
+            if (SetProperty(ref _mouseSideIndex, value))
+                ApplyMouse();
+        }
+    }
+
+    /// <summary>保持（按住/蓄力）时长，毫秒。</summary>
+    public string MouseHoldMs
+    {
+        get => _mouseHoldMs;
+        set
+        {
+            if (SetProperty(ref _mouseHoldMs, value))
+                ApplyMouse();
+        }
+    }
+
+    /// <summary>点击间隔 / 冷却时长，毫秒。</summary>
+    public string MouseIntervalMs
+    {
+        get => _mouseIntervalMs;
+        set
+        {
+            if (SetProperty(ref _mouseIntervalMs, value))
+                ApplyMouse();
+        }
+    }
+
+    /// <summary>随机抖动百分比（0-90）。</summary>
+    public string MouseJitterPercent
+    {
+        get => _mouseJitterPercent;
+        set
+        {
+            if (SetProperty(ref _mouseJitterPercent, value))
+                ApplyMouse();
+        }
+    }
+
+    /// <summary>自动钓鱼开关（复用 MCC 内置 AutoFishing）。</summary>
+    public bool FishingEnabled
+    {
+        get => _fishingEnabled;
+        set
+        {
+            if (SetProperty(ref _fishingEnabled, value))
+                _session.ConfigureFishing(value);
+        }
+    }
+
+    /// <summary>断线自动重连开关。</summary>
+    public bool ReconnectEnabled
+    {
+        get => _reconnectEnabled;
+        set
+        {
+            if (!SetProperty(ref _reconnectEnabled, value))
+                return;
+
+            ApplyReconnect();
+
+            AppendLog(value
+                ? $"§8自动重连已开启：最多 {ParseInt(_reconnectAttempts, 5, 1, 50)} 次，"
+                  + $"间隔约 {ParseInt(_reconnectDelayMs, 3000, 500, 300_000) / 1000.0:0.#} 秒（含随机抖动）。"
+                : "§8自动重连已关闭。");
+        }
+    }
+
+    /// <summary>最大重连次数。</summary>
+    public string ReconnectAttempts
+    {
+        get => _reconnectAttempts;
+        set
+        {
+            if (SetProperty(ref _reconnectAttempts, value))
+                ApplyReconnect();
+        }
+    }
+
+    /// <summary>重连前的等待时长，毫秒。</summary>
+    public string ReconnectDelayMs
+    {
+        get => _reconnectDelayMs;
+        set
+        {
+            if (SetProperty(ref _reconnectDelayMs, value))
+                ApplyReconnect();
+        }
+    }
+
+    private void ApplyAttack() =>
+        _session.ConfigureAttack(AttackEnabled, new AttackOptions
+        {
+            Range = ParseDouble(AttackRange, 3.0, 1.0, 4.0),
+            CooldownMinMs = ParseInt(AttackCooldownMin, 800, 50, 60_000),
+            CooldownMaxMs = ParseInt(AttackCooldownMax, 1600, 50, 60_000),
+        });
+
+    private void ApplyMouse() =>
+        _session.ConfigureMouse(MouseEnabled, new MouseOptions
+        {
+            Mode = (MouseMode)Math.Clamp(MouseModeIndex, 0, 2),
+            Side = (MouseSide)Math.Clamp(MouseSideIndex, 0, 1),
+            HoldMs = ParseInt(MouseHoldMs, 1000, 50, 60_000),
+            IntervalMs = ParseInt(MouseIntervalMs, 600, 50, 60_000),
+            JitterPercent = ParseInt(MouseJitterPercent, 20, 0, 90),
+        });
+
+    private void ApplyReconnect() =>
+        _session.ConfigureReconnect(new ReconnectOptions
+        {
+            Enabled = ReconnectEnabled,
+            MaxAttempts = ParseInt(ReconnectAttempts, 5, 1, 50),
+            DelayMs = ParseInt(ReconnectDelayMs, 3000, 500, 300_000),
+        });
+
+    /// <summary>解析输入框：非法或留空时退回默认值，并把结果限制在合理区间。</summary>
+    private static int ParseInt(string? text, int fallback, int min, int max)
+        => int.TryParse(text?.Trim(), out int value) ? Math.Clamp(value, min, max) : fallback;
+
+    private static double ParseDouble(string? text, double fallback, double min, double max)
+        => double.TryParse(text?.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out double value)
+            ? Math.Clamp(value, min, max)
+            : fallback;
+
+    #endregion
 
     private async Task ConnectAsync()
     {

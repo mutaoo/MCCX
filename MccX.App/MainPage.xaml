@@ -63,9 +63,10 @@
             </StackPanel>
         </Grid>
 
-        <!-- 右侧：当前账号的连接面板 + 日志控制台 -->
+        <!-- 右侧：当前账号的连接面板 + 自动化控制 + 日志控制台 -->
         <Grid Grid.Column="1" RowSpacing="10">
             <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
                 <RowDefinition Height="Auto" />
@@ -128,8 +129,91 @@
                            FontWeight="SemiBold" />
             </Grid>
 
+            <!-- 自动化控制（需求 3.2）：砍怪 / 鼠标按键 / 钓鱼 / 自动重连 -->
+            <Border x:Name="AutomationPanel"
+                    Grid.Row="1"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="10,8">
+                <StackPanel Spacing="6">
+                    <!-- 自动砍怪 -->
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <ToggleSwitch Header="自动砍怪"
+                                      AutomationProperties.Name="自动砍怪"
+                                      IsOn="{x:Bind ViewModel.AttackEnabled, Mode=TwoWay}" />
+                        <TextBlock Text="距离" VerticalAlignment="Center" />
+                        <TextBox Width="52"
+                                 AutomationProperties.Name="攻击距离"
+                                 Text="{x:Bind ViewModel.AttackRange, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                        <TextBlock Text="冷却" VerticalAlignment="Center" />
+                        <TextBox Width="58"
+                                 AutomationProperties.Name="冷却下限"
+                                 Text="{x:Bind ViewModel.AttackCooldownMin, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                        <TextBlock Text="-" VerticalAlignment="Center" />
+                        <TextBox Width="58"
+                                 AutomationProperties.Name="冷却上限"
+                                 Text="{x:Bind ViewModel.AttackCooldownMax, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                        <TextBlock Text="ms（随机）" VerticalAlignment="Center" />
+                    </StackPanel>
+
+                    <!-- 鼠标按键控制 -->
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <ToggleSwitch Header="鼠标控制"
+                                      AutomationProperties.Name="鼠标控制"
+                                      IsOn="{x:Bind ViewModel.MouseEnabled, Mode=TwoWay}" />
+                        <ComboBox MinWidth="96"
+                                  AutomationProperties.Name="鼠标模式"
+                                  SelectedIndex="{x:Bind ViewModel.MouseModeIndex, Mode=TwoWay}">
+                            <ComboBoxItem Content="长按" />
+                            <ComboBoxItem Content="间隔点击" />
+                            <ComboBoxItem Content="间隔长按" />
+                        </ComboBox>
+                        <ComboBox MinWidth="72"
+                                  AutomationProperties.Name="鼠标按键"
+                                  SelectedIndex="{x:Bind ViewModel.MouseSideIndex, Mode=TwoWay}">
+                            <ComboBoxItem Content="左键" />
+                            <ComboBoxItem Content="右键" />
+                        </ComboBox>
+                        <TextBlock Text="按住" VerticalAlignment="Center" />
+                        <TextBox Width="58"
+                                 AutomationProperties.Name="按住毫秒"
+                                 Text="{x:Bind ViewModel.MouseHoldMs, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                        <TextBlock Text="间隔" VerticalAlignment="Center" />
+                        <TextBox Width="58"
+                                 AutomationProperties.Name="间隔毫秒"
+                                 Text="{x:Bind ViewModel.MouseIntervalMs, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                        <TextBlock Text="抖动" VerticalAlignment="Center" />
+                        <TextBox Width="46"
+                                 AutomationProperties.Name="抖动百分比"
+                                 Text="{x:Bind ViewModel.MouseJitterPercent, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                        <TextBlock Text="%" VerticalAlignment="Center" />
+                    </StackPanel>
+
+                    <!-- 自动钓鱼 + 自动重连 -->
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <ToggleSwitch Header="自动钓鱼"
+                                      AutomationProperties.Name="自动钓鱼"
+                                      IsOn="{x:Bind ViewModel.FishingEnabled, Mode=TwoWay}" />
+                        <ToggleSwitch Header="自动重连"
+                                      AutomationProperties.Name="自动重连"
+                                      IsOn="{x:Bind ViewModel.ReconnectEnabled, Mode=TwoWay}" />
+                        <TextBlock Text="次数" VerticalAlignment="Center" />
+                        <TextBox Width="44"
+                                 AutomationProperties.Name="重连次数"
+                                 Text="{x:Bind ViewModel.ReconnectAttempts, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                        <TextBlock Text="间隔" VerticalAlignment="Center" />
+                        <TextBox Width="58"
+                                 AutomationProperties.Name="重连间隔"
+                                 Text="{x:Bind ViewModel.ReconnectDelayMs, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                        <TextBlock Text="ms（断线后自动重连）" VerticalAlignment="Center" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
             <!-- 日志 -->
-            <ListView Grid.Row="1"
+            <ListView Grid.Row="2"
                       x:Name="LogList"
                       ItemsSource="{x:Bind ViewModel.Logs, Mode=OneWay}"
                       SelectionMode="None"
@@ -149,7 +233,7 @@
             </ListView>
 
             <!-- 命令栏 -->
-            <Grid Grid.Row="2" ColumnSpacing="8">
+            <Grid Grid.Row="3" ColumnSpacing="8">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
