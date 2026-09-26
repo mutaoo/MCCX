@@ -19,7 +19,10 @@ public sealed partial class MainWindow : Window
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);
 
-        AppWindow.SetIcon("Assets/AppIcon.ico");
+        // unpackaged 应用必须给绝对路径，相对路径按进程工作目录解析，启动方式不同就会失效
+        string iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", "AppIcon.ico");
+        if (File.Exists(iconPath))
+            AppWindow.SetIcon(iconPath);
 
         // 关窗时断开 MCC 连接并释放会话，避免 MCC 的前台线程阻止进程退出
         Closed += (_, _) =>
