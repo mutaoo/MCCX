@@ -1,3 +1,4 @@
+using MinecraftClient.Inventory;
 using MinecraftClient.Mapping;
 using MinecraftClient.Scripting;
 
@@ -16,8 +17,9 @@ namespace MccX.Core;
 /// <list type="bullet">
 /// <item>左键 = 挖掘方块（StartDigging → 保持 → StopDigging），目标取视线方向上的方块（与真实玩家把鼠标指向方块一致）；
 /// 视线中没有可挖掘方块时本次直接跳过 —— 绝不回退去挖脚下地板，否则会把立足点挖穿导致持续坠落</item>
-/// <item>右键 = 使用物品（UseItem），按住期间每个 tick 重发一次，与原版按住右键一致；
-/// 协议里没有独立的“右键释放”包，停止发送即视为释放</item>
+/// <item>右键 = 视线指着方块时发 UseItemOn（开箱/按按钮/放方块），没指着方块才发 UseItem（使用手中物品），
+ /// 每次点击都会挥手；按住期间每个 tick 重发，与原版按住右键一致；
+ /// 协议里没有独立的“右键释放”包，停止发送即视为释放</item>
 /// </list>
 /// </summary>
 internal sealed class MouseControlBot : ChatBot
@@ -41,6 +43,15 @@ internal sealed class MouseControlBot : ChatBot
     private DateTime _lastBreakTrace = DateTime.MinValue;
     private Location? _lastDigTarget;
     private bool _warnedNoTarget;
+
+    /// <summary>
+    /// 是否已经走完服务器的 Configuration 阶段。MCC 的 Login() 在“登录成功”那一刻就返回，
+    /// 此时服务器还在配置阶段，发 Play 阶段的数据包会被直接踢掉，所以必须等 AfterGameJoined。
+    /// </summary>
+    private bool _inGame;
+
+    /// <summary>最近一次右键走的路径（指向方块 / 空处），只用于日志。</summary>
+    private string _rightClickPath = string.Empty;
 
     public MouseControlBot(MouseOptions options)
     {
@@ -73,8 +84,17 @@ internal sealed class MouseControlBot : ChatBot
         LogToConsole($"§a[鼠标] 已开启：{Describe(o)}");
     }
 
+    public override void AfterGameJoined()
+    {
+        // 服务器 Configuration 阶段结束、真正进入 Play 阶段后才允许发包
+        _inGame = true;
+    }
+
     public override void Update()
     {
+        if (!_inGame)
+            return;
+
         MouseOptions o = _options;
 
         switch (_phase)
@@ -113,13 +133,13 @@ internal sealed class MouseControlBot : ChatBot
 
         if (o.Mode == MouseMode.IntervalClick)
         {
-            Trace($"{SideName(o)} 点击");
+            Trace(PressLabel(o, "点击"));
             _phase = Phase.Cooling;
             _ticksRemaining = Ticks(o.IntervalMs, o.JitterPercent);
         }
         else
         {
-            Trace($"{SideName(o)} 按下");
+            Trace(PressLabel(o, "按下"));
             _phase = Phase.Hold;
             _ticksRemaining = Ticks(o.HoldMs, o.JitterPercent);
         }
@@ -158,7 +178,20 @@ internal sealed class MouseControlBot : ChatBot
     private bool Press(MouseOptions o)
     {
         if (o.Side == MouseSide.Right)
-            return UseItemInHand();
+        {
+            // 与原版一致：视线指着方块就发 UseItemOn（开箱、按按钮、放方块都靠它），
+            // 只发 UseItem 的话“对着方块右键”永远没反应。
+            bool hasTarget = TryGetDigTarget(out Location blockTarget, out Direction blockFace);
+            bool ok = hasTarget
+                ? SendPlaceBlock(blockTarget, blockFace, Hand.MainHand, lookAtBlock: false)
+                : UseItemInHand();
+
+            _rightClickPath = hasTarget ? "指向方块" : "空处";
+            if (ok)
+                SendAnimation(Hand.MainHand);
+
+            return ok;
+        }
 
         if (!TryGetDigTarget(out Location target, out Direction face))
         {
@@ -262,6 +295,12 @@ internal sealed class MouseControlBot : ChatBot
 
     private static string SideName(MouseOptions o)
         => o.Side == MouseSide.Left ? "左键" : "右键";
+
+    /// <summary>日志文案；右键额外标明本次走的是 UseItemOn（指向方块）还是 UseItem（空处）。</summary>
+    private string PressLabel(MouseOptions o, string action)
+        => o.Side == MouseSide.Right && _rightClickPath.Length > 0
+            ? $"{SideName(o)} {action}（{_rightClickPath}）"
+            : $"{SideName(o)} {action}";
 
     private static string Describe(MouseOptions o)
     {

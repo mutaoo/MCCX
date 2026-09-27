@@ -43,6 +43,10 @@ public static class MccRuntime
             Settings.Config.Main.Advanced.InventoryHandling = true;
             Settings.Config.Main.Advanced.EntityHandling = true;
 
+            // 死亡后自动重生（MCC 默认关闭，关掉就会卡在死亡界面等玩家手动按重生）。
+            // 打开后 MCC 在收到血量 <= 0 时等 1 秒自己发重生包。
+            Settings.Config.Main.Advanced.AutoRespawn = true;
+
             backend = uiBackend;
             return uiBackend;
         }

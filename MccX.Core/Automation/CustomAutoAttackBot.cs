@@ -23,6 +23,12 @@ internal sealed class CustomAutoAttackBot : ChatBot
     /// <summary>只有见过非零生命值，才认为实体生命字段可靠，用于跳过“尸体”。</summary>
     private bool _sawHealth;
 
+    /// <summary>
+    /// 是否已经走完服务器的 Configuration 阶段。MCC 的 Login() 在“登录成功”那一刻就返回，
+    /// 此时服务器还在配置阶段，发 Play 阶段的数据包会被直接踢掉，所以必须等 AfterGameJoined。
+    /// </summary>
+    private bool _inGame;
+
     public CustomAutoAttackBot(AttackOptions options)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
@@ -48,8 +54,17 @@ internal sealed class CustomAutoAttackBot : ChatBot
         LogToConsole($"§a[砍怪] 已开启：距离 {o.Range:0.#} 格，冷却 {o.CooldownMinMs}-{o.CooldownMaxMs} ms（随机）。");
     }
 
+    public override void AfterGameJoined()
+    {
+        // 服务器 Configuration 阶段结束、真正进入 Play 阶段后才允许发包
+        _inGame = true;
+    }
+
     public override void Update()
     {
+        if (!_inGame)
+            return;
+
         if (_cooldownTicks > 0)
         {
             _cooldownTicks--;

@@ -475,7 +475,10 @@ public sealed class MccSession : IDisposable
         lock (_gate)
         {
             client = _client;
-            if (_state != MccConnectionState.Connected || client is null)
+            // _gameJoined 必须为真：MCC 的 Login() 在“登录成功”就返回，此时服务器还在
+            // Configuration 阶段，这时挂载 Bot 会发出 Play 阶段的数据包，
+            // 服务器会按 “Received unknown packet id …” 直接踢人（偶发连不上的根因）。
+            if (_state != MccConnectionState.Connected || client is null || !_gameJoined)
                 return;
         }
 
@@ -753,6 +756,9 @@ public sealed class MccSession : IDisposable
 
         LogUi("§8已进入游戏，可以发送聊天与命令。");
         GameJoined?.Invoke();
+
+        // 服务器配置阶段到此才结束，此时才允许挂载自动化 Bot（ApplyAutomation 依赖 _gameJoined）
+        ApplyAutomation();
     }
 
     private void OnMonitorDisconnected(ChatBot.DisconnectReason reason, string message)
@@ -773,6 +779,14 @@ public sealed class MccSession : IDisposable
 
         string detail = string.IsNullOrWhiteSpace(message) ? reason.ToString() : message;
         LogUi($"§8连接已断开（{detail}）。");
+
+        // 服务器不认识我们发出的数据包 id：只有客户端版本和服务器实际版本对不上才会出现
+        if (detail.Contains("unknown packet id", StringComparison.OrdinalIgnoreCase))
+        {
+            LogUi("§e提示：MccX 的协议版本与服务器实际版本不一致（Ping 结果只是服务器自己上报的），" +
+                  "可以在“版本”框手动指定服务器真实版本后重连。");
+        }
+
         SetState(MccConnectionState.Disconnected);
     }
 
