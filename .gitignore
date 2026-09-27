@@ -1,0 +1,20 @@
+# 构建产物（MccX 与 MCCSource 通用）
+bin/
+obj/
+.vs/
+*.user
+*.suo
+
+# 运行期日志
+logs/
+
+# 账号信息：永不入库（加密账号数据、密钥、MCC 配置里的账号口令）
+accounts.dat
+accounts.key
+MinecraftClient.ini
+
+# 本地不入库：根目录 logo 源图
+logo.png
+
+# 上游 MCC 原仓库的 git 元数据备份（源码已并入本仓库，目录本身不入库）
+/.upstream-git/
