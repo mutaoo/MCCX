@@ -44,14 +44,70 @@ public sealed class AccountStore : IDisposable
 
     public AccountStore(string? directory = null)
     {
+        bool isDefaultDirectory = directory is null;
         _directory = directory ?? DefaultDirectory;
         _dataPath = Path.Combine(_directory, DataFileName);
         _keyPath = Path.Combine(_directory, KeyFileName);
+
+        EnsureDirectoryExists();
+
+        // 只有默认位置才做迁移：测试用的临时目录不应被历史数据污染
+        if (isDefaultDirectory)
+            MigrateLegacyDataIfAbsent();
     }
 
-    /// <summary>默认存储目录：%APPDATA%\MccX。</summary>
+    /// <summary>默认存储目录：程序（exe）所在目录，与程序同路径；不存在则创建。</summary>
     public static string DefaultDirectory =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MccX");
+        AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+    /// <summary>本次启动是否把旧的 %APPDATA%\MccX 账号文件搬到了程序目录。</summary>
+    public bool MigratedLegacyData { get; private set; }
+
+    private void EnsureDirectoryExists()
+    {
+        try
+        {
+            if (!Directory.Exists(_directory))
+                Directory.CreateDirectory(_directory);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            // 建目录失败先不报错：Load/Persist 会把真正的失败原因写进 LastError
+            _ = ex;
+        }
+    }
+
+    /// <summary>
+    /// 程序目录还没有账号数据时，把旧版本存放在 %APPDATA%\MccX 的文件复制过来（DPAPI 同一用户可直接解密）。
+    /// 已有数据则直接使用，不覆盖。
+    /// </summary>
+    private void MigrateLegacyDataIfAbsent()
+    {
+        if (File.Exists(_dataPath))
+            return;
+
+        try
+        {
+            string legacyDirectory = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MccX");
+            string legacyDataPath = Path.Combine(legacyDirectory, DataFileName);
+            if (!File.Exists(legacyDataPath))
+                return;
+
+            File.Copy(legacyDataPath, _dataPath, overwrite: false);
+
+            string legacyKeyPath = Path.Combine(legacyDirectory, KeyFileName);
+            if (File.Exists(legacyKeyPath) && !File.Exists(_keyPath))
+                File.Copy(legacyKeyPath, _keyPath, overwrite: false);
+
+            MigratedLegacyData = true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            // 迁移失败不影响启动：当作没有历史账号
+            _ = ex;
+        }
+    }
 
     /// <summary>上次加载/保存失败的原因（文件损坏、DPAPI 失败等），成功时为 null。</summary>
     public string? LastError { get; private set; }

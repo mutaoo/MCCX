@@ -1,13 +1,18 @@
 using System.Text;
 using MccX.Core;
+using MccX.Core.Networking;
 
 // 无界面冒烟测试：
 //   1) 账号加解密存储自测: dotnet run --project MccX.SmokeTest -- --accounts
 //   2) MCC 连服链路自测  : dotnet run --project MccX.SmokeTest -- [host] [port] [version]
 //   例                   : dotnet run --project MccX.SmokeTest -- 127.0.0.1 25565 auto
+//   3) 端口解析自测      : dotnet run --project MccX.SmokeTest -- --port [srv <域名>]
 
 if (args.Length > 0 && args[0] == "--accounts")
     return RunAccountStoreTest();
+
+if (args.Length > 0 && args[0] == "--port")
+    return await RunPortResolveTest(args.AsSpan(1).ToArray());
 
 string host = args.Length > 0 ? args[0] : "127.0.0.1";
 ushort port = args.Length > 1 && ushort.TryParse(args[1], out ushort p) ? p : (ushort)25565;
@@ -205,5 +210,68 @@ static int RunAccountStoreTest()
 
     Directory.Delete(dir, recursive: true);
     Console.WriteLine("[TEST] accounts PASS");
+    return 0;
+}
+
+// 端口自动解析自测：地址拆分 / IP 判定 / （可选）真实 DNS SRV 查询。
+//   仅本地自测 : dotnet run --project MccX.SmokeTest -- --port
+//   真实 SRV   : dotnet run --project MccX.SmokeTest -- --port srv <域名>
+static async Task<int> RunPortResolveTest(string[] rest)
+{
+    int failures = 0;
+
+    void Check(string input, string expectedHost, string? expectedPort)
+    {
+        (string host, string? port) = ServerAddress.Split(input);
+        bool ok = host == expectedHost && port == expectedPort;
+        string actual = $"(\"{host}\", {(port is null ? "null" : $"\"{port}\"")})";
+        string expected = $"(\"{expectedHost}\", {(expectedPort is null ? "null" : $"\"{expectedPort}\"")})";
+        Console.WriteLine($"[TEST] Split(\"{input}\") => {actual} {(ok ? "OK" : $"FAIL 期望 {expected}")}");
+        if (!ok)
+            failures++;
+    }
+
+    void CheckIp(string host, bool expected)
+    {
+        bool actual = ServerAddress.IsIpLiteral(host);
+        bool ok = actual == expected;
+        Console.WriteLine($"[TEST] IsIpLiteral(\"{host}\") = {actual} {(ok ? "OK" : $"FAIL 期望 {expected}")}");
+        if (!ok)
+            failures++;
+    }
+
+    Check("example.com", "example.com", null);
+    Check("example.com:25566", "example.com", "25566");
+    Check("  example.com:1 ", "example.com", "1");
+    Check("127.0.0.1", "127.0.0.1", null);
+    Check("127.0.0.1:25566", "127.0.0.1", "25566");
+    Check("[::1]:25566", "::1", "25566");
+    Check("[::1]", "::1", null);
+    Check("::1", "::1", null);          // 裸 IPv6 有多个冒号，不拆
+    Check("example.com:0", "example.com:0", null);      // 端口 0 不合法，不拆
+    Check("example.com:abc", "example.com:abc", null);  // 端口非数字，不拆
+    Check("", "", null);
+
+    CheckIp("127.0.0.1", true);
+    CheckIp("::1", true);
+    CheckIp("example.com", false);
+
+    if (rest.Length >= 2 && string.Equals(rest[0], "srv", StringComparison.OrdinalIgnoreCase))
+    {
+        string domain = rest[1];
+        Console.WriteLine($"[TEST] SRV 查询 _minecraft._tcp.{domain} …");
+        ushort? srvPort = await ServerAddress.TrySrvPortAsync(domain);
+        Console.WriteLine(srvPort is null
+            ? "[TEST] 未查到 SRV 记录（运行时会回退到 25565）"
+            : $"[TEST] SRV 端口 = {srvPort}");
+    }
+
+    if (failures > 0)
+    {
+        Console.WriteLine($"[TEST] FAIL: {failures} 项不通过");
+        return 20;
+    }
+
+    Console.WriteLine("[TEST] port PASS");
     return 0;
 }

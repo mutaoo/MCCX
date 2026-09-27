@@ -18,11 +18,11 @@
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
-        <TitleBar x:Name="AppTitleBar" Title="MccX.App">
-            <TitleBar.IconSource>
-                <ImageIconSource ImageSource="Assets/AppIcon.png" />
-            </TitleBar.IconSource>
-        </TitleBar>
+        <!--
+            不放 TitleBar.IconSource：任务栏/窗口图标已由 ApplicationIcon + AppWindow.SetIcon 提供，
+            标题栏再放一处会同时出现两个 logo。
+        -->
+        <TitleBar x:Name="AppTitleBar" Title="MccX.App" />
 
         <!--
             The Frame hosts pages for your application content. Add your UI to

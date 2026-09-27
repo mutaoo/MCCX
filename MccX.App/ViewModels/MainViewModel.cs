@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Windows.Input;
 using MccX.Core;
+using MccX.Core.Networking;
 using MinecraftClient.Scripting;
 using Microsoft.UI.Dispatching;
 
@@ -49,6 +50,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         ReloadAccounts();
 
         AppendLog("§8[MccX] 就绪：填写服务器与用户名后点击“连接”。（离线模式）");
+        AppendLog($"§8账号文件：{AccountStore.DefaultDirectory}");
+        if (_accountStore.MigratedLegacyData)
+            AppendLog("§8已把旧的 %APPDATA%\\MccX 账号文件迁移到程序目录。");
         if (!string.IsNullOrEmpty(_accountStore.LastError))
             AppendLog($"§e账号列表解密失败，已按空列表启动：{_accountStore.LastError}");
     }
@@ -373,17 +377,15 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private async Task ConnectAsync()
     {
-        if (!ushort.TryParse(ServerPort.Trim(), out ushort port) || port == 0)
-        {
-            AppendLog("§c端口无效，请输入 1-65535 之间的数字。");
-            return;
-        }
+        (string host, ushort port) = await ResolveServerAsync();
+        if (port == 0)
+            return; // 地址/端口有问题，原因已经在日志里说明
 
         try
         {
             await _session.ConnectAsync(new MccConnectionOptions
             {
-                ServerHost = ServerHost,
+                ServerHost = host,
                 Port = port,
                 Username = Username,
                 MinecraftVersion = MinecraftVersion,
@@ -393,6 +395,63 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             AppendLog($"§c连接出错：{ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// 解析要连接的地址。
+    /// ① “服务器”一栏允许直接写 <c>域名:端口</c>（IPv6 写 <c>[地址]:端口</c>），会把端口拆出来回填到端口框；
+    /// ② 端口没填时先查 DNS SRV 记录 <c>_minecraft._tcp</c>（与原版客户端一致），查到就用查到的；
+    /// ③ 查不到（含 IP 地址、无网络）就用默认端口 25565。
+    /// 全程只回填内存里的输入框，不写任何配置文件。
+    /// </summary>
+    /// <returns>端口为 0 表示输入非法，已在日志说明，不要发起连接。</returns>
+    private async Task<(string Host, ushort Port)> ResolveServerAsync()
+    {
+        string raw = ServerHost.Trim();
+        if (raw.Length == 0)
+        {
+            AppendLog("§c服务器地址不能为空。");
+            return (raw, 0);
+        }
+
+        (string host, string? embeddedPort) = ServerAddress.Split(raw);
+        host = host.Trim();
+        if (!string.Equals(host, ServerHost, StringComparison.Ordinal))
+            ServerHost = host; // 写成 “域名:端口” 时，把拆剩的纯主机名回填
+
+        // 端口优先级：地址里显式写的 > 端口框里填的 > 自动解析
+        string portText = embeddedPort ?? ServerPort.Trim();
+        if (portText.Length > 0)
+        {
+            if (!ushort.TryParse(portText, out ushort port) || port == 0)
+            {
+                AppendLog($"§c端口“{portText}”无效，请输入 1-65535 之间的数字。");
+                return (host, 0);
+            }
+
+            string normalized = port.ToString(CultureInfo.InvariantCulture);
+            if (!string.Equals(ServerPort, normalized, StringComparison.Ordinal))
+                ServerPort = normalized; // 从地址里拆出来的端口同步显示到端口框
+
+            return (host, port);
+        }
+
+        // 端口留空 → 自动解析
+        if (ServerAddress.IsIpLiteral(host))
+        {
+            ServerPort = ServerAddress.DefaultPort.ToString(CultureInfo.InvariantCulture);
+            AppendLog($"§7未填端口：IP 地址查 SRV 没有意义，直接用默认端口 {ServerAddress.DefaultPort}。");
+            return (host, ServerAddress.DefaultPort);
+        }
+
+        AppendLog("§8未填端口，正在查询 DNS SRV 记录 _minecraft._tcp …");
+        ushort? srvPort = await ServerAddress.TrySrvPortAsync(host);
+        ushort resolved = srvPort ?? ServerAddress.DefaultPort;
+        ServerPort = resolved.ToString(CultureInfo.InvariantCulture);
+        AppendLog(srvPort is null
+            ? $"§7没查到 SRV 记录，使用默认端口 {ServerAddress.DefaultPort}。"
+            : $"§7SRV 解析完成：{host} → 端口 {resolved}。");
+        return (host, resolved);
     }
 
     private void Disconnect() => _session.Disconnect();
@@ -494,7 +553,22 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             return null;
         }
 
-        if (!ushort.TryParse(ServerPort.Trim(), out ushort port) || port == 0)
+        // 端口没填时的兜底：先看地址里有没有写“:端口”，都没有就按默认端口记
+        (host, string? embeddedPort) = ServerAddress.Split(host);
+        host = host.Trim();
+        if (!string.Equals(host, ServerHost, StringComparison.Ordinal))
+            ServerHost = host;
+
+        string portText = embeddedPort ?? ServerPort.Trim();
+        if (portText.Length == 0)
+        {
+            portText = ServerAddress.DefaultPort.ToString(CultureInfo.InvariantCulture);
+            ServerPort = portText;
+            if (!silent)
+                AppendLog($"§7没填端口，保存时按默认端口 {ServerAddress.DefaultPort} 记录（连接时仍会先查 SRV）。");
+        }
+
+        if (!ushort.TryParse(portText, out ushort port) || port == 0)
         {
             if (!silent)
                 AppendLog("§c端口无效，无法保存账号。");

@@ -72,58 +72,65 @@
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
-            <!-- 连接参数栏 -->
-            <Grid Grid.Row="0" ColumnSpacing="8" RowSpacing="6">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="2*" />
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="86" />
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="1.6*" />
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="1.6*" />
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
+            <!--
+                连接参数栏。
+                状态文字必须独占一行：否则它的宽度会参与“服务器”所在 Auto 列的列宽计算，
+                连上服务器后状态变长（“已连接 host:port”）会把服务器框挤窄、后面所有控件位移。
+            -->
+            <Grid Grid.Row="0" RowSpacing="6">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
-                <TextBlock Grid.Column="0" Grid.Row="0" Text="服务器" VerticalAlignment="Center" />
-                <TextBox Grid.Column="1" Grid.Row="0"
-                         x:Name="ServerBox"
-                         Text="{x:Bind ViewModel.ServerHost, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                         MinWidth="140"
-                         PlaceholderText="地址或域名" />
+                <Grid x:Name="ParamsGrid" Grid.Row="0" ColumnSpacing="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="2*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="86" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="1.6*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="1.6*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
 
-                <TextBlock Grid.Column="2" Grid.Row="0" Text="端口" VerticalAlignment="Center" />
-                <TextBox Grid.Column="3" Grid.Row="0"
-                         x:Name="PortBox"
-                         Text="{x:Bind ViewModel.ServerPort, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                         PlaceholderText="25565" />
+                    <TextBlock Grid.Column="0" Text="服务器" VerticalAlignment="Center" />
+                    <TextBox Grid.Column="1"
+                             x:Name="ServerBox"
+                             Text="{x:Bind ViewModel.ServerHost, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                             MinWidth="140"
+                             PlaceholderText="地址或域名" />
 
-                <TextBlock Grid.Column="4" Grid.Row="0" Text="用户名" VerticalAlignment="Center" />
-                <TextBox Grid.Column="5" Grid.Row="0"
-                         x:Name="UserBox"
-                         Text="{x:Bind ViewModel.Username, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                         PlaceholderText="离线玩家名" />
+                    <TextBlock Grid.Column="2" Text="端口" VerticalAlignment="Center" />
+                    <TextBox Grid.Column="3"
+                             x:Name="PortBox"
+                             Text="{x:Bind ViewModel.ServerPort, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                             PlaceholderText="25565" />
 
-                <TextBlock Grid.Column="6" Grid.Row="0" Text="版本" VerticalAlignment="Center" />
-                <TextBox Grid.Column="7" Grid.Row="0"
-                         x:Name="VersionBox"
-                         Text="{x:Bind ViewModel.MinecraftVersion, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                         PlaceholderText="auto" />
+                    <TextBlock Grid.Column="4" Text="用户名" VerticalAlignment="Center" />
+                    <TextBox Grid.Column="5"
+                             x:Name="UserBox"
+                             Text="{x:Bind ViewModel.Username, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                             PlaceholderText="离线玩家名" />
 
-                <Button Grid.Column="8" Grid.Row="0"
-                        Content="连接"
-                        Command="{x:Bind ViewModel.ConnectCommand}" />
-                <Button Grid.Column="9" Grid.Row="0"
-                        Content="断开"
-                        Command="{x:Bind ViewModel.DisconnectCommand}" />
+                    <TextBlock Grid.Column="6" Text="版本" VerticalAlignment="Center" />
+                    <TextBox Grid.Column="7"
+                             x:Name="VersionBox"
+                             Text="{x:Bind ViewModel.MinecraftVersion, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                             PlaceholderText="auto" />
 
-                <TextBlock Grid.Column="0" Grid.Row="1"
+                    <Button Grid.Column="8"
+                            Content="连接"
+                            Command="{x:Bind ViewModel.ConnectCommand}" />
+                    <Button Grid.Column="9"
+                            Content="断开"
+                            Command="{x:Bind ViewModel.DisconnectCommand}" />
+                </Grid>
+
+                <TextBlock Grid.Row="1"
                            Text="{x:Bind ViewModel.StateText, Mode=OneWay}"
                            VerticalAlignment="Center"
                            FontWeight="SemiBold" />
@@ -137,79 +144,196 @@
                     BorderThickness="1"
                     CornerRadius="8"
                     Padding="10,8">
-                <StackPanel Spacing="6">
+                <!--
+                    功能开关横排；每个功能的参数不再平铺，收进开关旁边的下拉按钮（Flyout）。
+                    AutomationProperties.Name 保持与原 UI 一致，自动化测试仍可定位。
+                    外面套 ScrollViewer：窗口变窄时横向滚动，而不是把最后面的功能裁掉。
+                -->
+                <ScrollViewer HorizontalScrollMode="Enabled"
+                              HorizontalScrollBarVisibility="Auto"
+                              VerticalScrollMode="Disabled"
+                              VerticalScrollBarVisibility="Disabled">
+                    <StackPanel x:Name="AutomationRow" Orientation="Horizontal" Spacing="14">
+
                     <!-- 自动砍怪 -->
-                    <StackPanel Orientation="Horizontal" Spacing="6">
-                        <ToggleSwitch Header="自动砍怪"
-                                      AutomationProperties.Name="自动砍怪"
+                    <StackPanel Orientation="Horizontal" Spacing="4">
+                        <TextBlock Text="自动砍怪" VerticalAlignment="Center" />
+                        <ToggleSwitch AutomationProperties.Name="自动砍怪"
+                                      MinWidth="0"
                                       IsOn="{x:Bind ViewModel.AttackEnabled, Mode=TwoWay}" />
-                        <TextBlock Text="距离" VerticalAlignment="Center" />
-                        <TextBox Width="52"
-                                 AutomationProperties.Name="攻击距离"
-                                 Text="{x:Bind ViewModel.AttackRange, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                        <TextBlock Text="冷却" VerticalAlignment="Center" />
-                        <TextBox Width="58"
-                                 AutomationProperties.Name="冷却下限"
-                                 Text="{x:Bind ViewModel.AttackCooldownMin, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                        <TextBlock Text="-" VerticalAlignment="Center" />
-                        <TextBox Width="58"
-                                 AutomationProperties.Name="冷却上限"
-                                 Text="{x:Bind ViewModel.AttackCooldownMax, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                        <TextBlock Text="ms（随机）" VerticalAlignment="Center" />
+                        <DropDownButton AutomationProperties.Name="自动砍怪选项"
+                                        ToolTipService.ToolTip="砍怪参数">
+                            <!-- DropDownButton 模板本身自带箭头，这里不再重复放 FontIcon -->
+                            <DropDownButton.Flyout>
+                                <Flyout>
+                                    <StackPanel Spacing="8" Width="250">
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="64" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="距离" VerticalAlignment="Center" />
+                                            <TextBox Grid.Column="1"
+                                                     AutomationProperties.Name="攻击距离"
+                                                     Text="{x:Bind ViewModel.AttackRange, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                        </Grid>
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="64" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="冷却下限" VerticalAlignment="Center" />
+                                            <TextBox Grid.Column="1"
+                                                     AutomationProperties.Name="冷却下限"
+                                                     Text="{x:Bind ViewModel.AttackCooldownMin, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                        </Grid>
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="64" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="冷却上限" VerticalAlignment="Center" />
+                                            <TextBox Grid.Column="1"
+                                                     AutomationProperties.Name="冷却上限"
+                                                     Text="{x:Bind ViewModel.AttackCooldownMax, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                        </Grid>
+                                        <TextBlock Text="冷却取下限~上限之间的随机值（ms），带随机抖动。"
+                                                   FontSize="12"
+                                                   Opacity="0.7"
+                                                   TextWrapping="Wrap" />
+                                    </StackPanel>
+                                </Flyout>
+                            </DropDownButton.Flyout>
+                        </DropDownButton>
                     </StackPanel>
 
                     <!-- 鼠标按键控制 -->
-                    <StackPanel Orientation="Horizontal" Spacing="6">
-                        <ToggleSwitch Header="鼠标控制"
-                                      AutomationProperties.Name="鼠标控制"
+                    <StackPanel Orientation="Horizontal" Spacing="4">
+                        <TextBlock Text="鼠标控制" VerticalAlignment="Center" />
+                        <ToggleSwitch AutomationProperties.Name="鼠标控制"
+                                      MinWidth="0"
                                       IsOn="{x:Bind ViewModel.MouseEnabled, Mode=TwoWay}" />
-                        <ComboBox MinWidth="96"
-                                  AutomationProperties.Name="鼠标模式"
-                                  SelectedIndex="{x:Bind ViewModel.MouseModeIndex, Mode=TwoWay}">
-                            <ComboBoxItem Content="长按" />
-                            <ComboBoxItem Content="间隔点击" />
-                            <ComboBoxItem Content="间隔长按" />
-                        </ComboBox>
-                        <ComboBox MinWidth="72"
-                                  AutomationProperties.Name="鼠标按键"
-                                  SelectedIndex="{x:Bind ViewModel.MouseSideIndex, Mode=TwoWay}">
-                            <ComboBoxItem Content="左键" />
-                            <ComboBoxItem Content="右键" />
-                        </ComboBox>
-                        <TextBlock Text="按住" VerticalAlignment="Center" />
-                        <TextBox Width="58"
-                                 AutomationProperties.Name="按住毫秒"
-                                 Text="{x:Bind ViewModel.MouseHoldMs, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                        <TextBlock Text="间隔" VerticalAlignment="Center" />
-                        <TextBox Width="58"
-                                 AutomationProperties.Name="间隔毫秒"
-                                 Text="{x:Bind ViewModel.MouseIntervalMs, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                        <TextBlock Text="抖动" VerticalAlignment="Center" />
-                        <TextBox Width="46"
-                                 AutomationProperties.Name="抖动百分比"
-                                 Text="{x:Bind ViewModel.MouseJitterPercent, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                        <TextBlock Text="%" VerticalAlignment="Center" />
+                        <DropDownButton AutomationProperties.Name="鼠标控制选项"
+                                        ToolTipService.ToolTip="鼠标参数">
+                            <!-- DropDownButton 模板本身自带箭头，这里不再重复放 FontIcon -->
+                            <DropDownButton.Flyout>
+                                <Flyout>
+                                    <StackPanel Spacing="8" Width="250">
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="64" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="模式" VerticalAlignment="Center" />
+                                            <ComboBox Grid.Column="1"
+                                                      AutomationProperties.Name="鼠标模式"
+                                                      SelectedIndex="{x:Bind ViewModel.MouseModeIndex, Mode=TwoWay}">
+                                                <ComboBoxItem Content="长按" />
+                                                <ComboBoxItem Content="间隔点击" />
+                                                <ComboBoxItem Content="间隔长按" />
+                                            </ComboBox>
+                                        </Grid>
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="64" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="按键" VerticalAlignment="Center" />
+                                            <ComboBox Grid.Column="1"
+                                                      AutomationProperties.Name="鼠标按键"
+                                                      SelectedIndex="{x:Bind ViewModel.MouseSideIndex, Mode=TwoWay}">
+                                                <ComboBoxItem Content="左键" />
+                                                <ComboBoxItem Content="右键" />
+                                            </ComboBox>
+                                        </Grid>
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="64" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="按住 ms" VerticalAlignment="Center" />
+                                            <TextBox Grid.Column="1"
+                                                     AutomationProperties.Name="按住毫秒"
+                                                     Text="{x:Bind ViewModel.MouseHoldMs, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                        </Grid>
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="64" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="间隔 ms" VerticalAlignment="Center" />
+                                            <TextBox Grid.Column="1"
+                                                     AutomationProperties.Name="间隔毫秒"
+                                                     Text="{x:Bind ViewModel.MouseIntervalMs, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                        </Grid>
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="64" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="抖动 %" VerticalAlignment="Center" />
+                                            <TextBox Grid.Column="1"
+                                                     AutomationProperties.Name="抖动百分比"
+                                                     Text="{x:Bind ViewModel.MouseJitterPercent, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                        </Grid>
+                                    </StackPanel>
+                                </Flyout>
+                            </DropDownButton.Flyout>
+                        </DropDownButton>
                     </StackPanel>
 
-                    <!-- 自动钓鱼 + 自动重连 -->
-                    <StackPanel Orientation="Horizontal" Spacing="6">
-                        <ToggleSwitch Header="自动钓鱼"
-                                      AutomationProperties.Name="自动钓鱼"
+                    <!-- 自动钓鱼（无参数，不放下拉按钮） -->
+                    <StackPanel Orientation="Horizontal" Spacing="4">
+                        <TextBlock Text="自动钓鱼" VerticalAlignment="Center" />
+                        <ToggleSwitch AutomationProperties.Name="自动钓鱼"
+                                      MinWidth="0"
                                       IsOn="{x:Bind ViewModel.FishingEnabled, Mode=TwoWay}" />
-                        <ToggleSwitch Header="自动重连"
-                                      AutomationProperties.Name="自动重连"
-                                      IsOn="{x:Bind ViewModel.ReconnectEnabled, Mode=TwoWay}" />
-                        <TextBlock Text="次数" VerticalAlignment="Center" />
-                        <TextBox Width="44"
-                                 AutomationProperties.Name="重连次数"
-                                 Text="{x:Bind ViewModel.ReconnectAttempts, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                        <TextBlock Text="间隔" VerticalAlignment="Center" />
-                        <TextBox Width="58"
-                                 AutomationProperties.Name="重连间隔"
-                                 Text="{x:Bind ViewModel.ReconnectDelayMs, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                        <TextBlock Text="ms（断线后自动重连）" VerticalAlignment="Center" />
                     </StackPanel>
-                </StackPanel>
+
+                    <!-- 自动重连 -->
+                    <StackPanel Orientation="Horizontal" Spacing="4">
+                        <TextBlock Text="自动重连" VerticalAlignment="Center" />
+                        <ToggleSwitch AutomationProperties.Name="自动重连"
+                                      MinWidth="0"
+                                      IsOn="{x:Bind ViewModel.ReconnectEnabled, Mode=TwoWay}" />
+                        <DropDownButton AutomationProperties.Name="自动重连选项"
+                                        ToolTipService.ToolTip="重连参数">
+                            <!-- DropDownButton 模板本身自带箭头，这里不再重复放 FontIcon -->
+                            <DropDownButton.Flyout>
+                                <Flyout>
+                                    <StackPanel Spacing="8" Width="250">
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="64" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="次数" VerticalAlignment="Center" />
+                                            <TextBox Grid.Column="1"
+                                                     AutomationProperties.Name="重连次数"
+                                                     Text="{x:Bind ViewModel.ReconnectAttempts, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                        </Grid>
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="64" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="间隔 ms" VerticalAlignment="Center" />
+                                            <TextBox Grid.Column="1"
+                                                     AutomationProperties.Name="重连间隔"
+                                                     Text="{x:Bind ViewModel.ReconnectDelayMs, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                        </Grid>
+                                        <TextBlock Text="断线后按次数与间隔自动重连。"
+                                                   FontSize="12"
+                                                   Opacity="0.7"
+                                                   TextWrapping="Wrap" />
+                                    </StackPanel>
+                                </Flyout>
+                            </DropDownButton.Flyout>
+                        </DropDownButton>
+                    </StackPanel>
+
+                    </StackPanel>
+                </ScrollViewer>
             </Border>
 
             <!-- 日志 -->

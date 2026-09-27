@@ -19,7 +19,7 @@
   <Properties>
     <DisplayName>MccX.App</DisplayName>
     <PublisherDisplayName>AppPublisher</PublisherDisplayName>
-    <Logo>Assets\StoreLogo.png</Logo>
+    <Logo>Assets\AppIcon.ico</Logo>
     <uap10:PackageIntegrity>
       <uap10:Content Enforcement="on"/>
     </uap10:PackageIntegrity>
@@ -42,10 +42,10 @@
         DisplayName="MccX.App"
         Description="MccX.App"
         BackgroundColor="transparent"
-        Square150x150Logo="Assets\Square150x150Logo.png"
-        Square44x44Logo="Assets\Square44x44Logo.png">
-        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
-        <uap:SplashScreen Image="Assets\SplashScreen.png" />
+        Square150x150Logo="Assets\AppIcon.ico"
+        Square44x44Logo="Assets\AppIcon.ico">
+        <uap:DefaultTile Wide310x150Logo="Assets\AppIcon.ico" />
+        <uap:SplashScreen Image="Assets\AppIcon.ico" />
       </uap:VisualElements>
     </Application>
   </Applications>
