@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "MCCX.App (Unpackaged)": {
+      "commandName": "Project"
+    },
+    "MCCX.App (Package)": {
+      "commandName": "MsixPackage"
+    }
+  }
+}

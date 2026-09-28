@@ -1,4 +1,4 @@
-# 构建产物（MccX 与 MCCSource 通用）
+# 构建产物（MCCX 与 MCCSource 通用）
 bin/
 obj/
 .vs/
@@ -13,7 +13,8 @@ accounts.dat
 accounts.key
 MinecraftClient.ini
 
-# 本地不入库：根目录 logo 源图
+# 本地文档与素材：需求文档、开发摘要、logo 源图（不入库）
+other/
 logo.png
 
 # 上游 MCC 原仓库的 git 元数据备份（源码已并入本仓库，目录本身不入库）
