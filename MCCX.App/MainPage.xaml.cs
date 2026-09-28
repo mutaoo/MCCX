@@ -232,4 +232,54 @@ public sealed partial class MainPage : Page
 
         e.Handled = true;
     }
+
+    /// <summary>
+    /// 参数下拉（Flyout）展开时，WinUI 把焦点交给第一个文本框，但光标停在文本最前面，
+    /// 用户得再点一下或按 End 才能改值。这里在展开后把光标补到文本末尾。
+    /// </summary>
+    private void OnFlyoutOpened(object sender, object e)
+    {
+        if (sender is not Flyout flyout)
+            return;
+
+        // Opened 触发的瞬间焦点可能还没落定，延后一拍再处理
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            TextBox? box = FindFocusedTextBox(flyout.Content);
+            if (box is null)
+                return; // 焦点在下拉框等其它控件上就不打扰它
+
+            string text = box.Text ?? string.Empty;
+            box.Select(text.Length, 0);
+        });
+    }
+
+    /// <summary>在 Flyout 内容树里找当前拿到焦点的文本框；都没有焦点就返回 null（不抢焦点）。</summary>
+    private static TextBox? FindFocusedTextBox(DependencyObject? root)
+    {
+        if (root is null)
+            return null;
+
+        if (root is TextBox box && box.FocusState != FocusState.Unfocused)
+            return box;
+
+        int count;
+        try
+        {
+            count = VisualTreeHelper.GetChildrenCount(root);
+        }
+        catch
+        {
+            return null; // 个别容器不支持遍历，跳过即可
+        }
+
+        for (int i = 0; i < count; i++)
+        {
+            TextBox? found = FindFocusedTextBox(VisualTreeHelper.GetChild(root, i));
+            if (found is not null)
+                return found;
+        }
+
+        return null;
+    }
 }

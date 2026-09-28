@@ -6,7 +6,7 @@
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:local="using:MCCX_App"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-    Title="MCCX.App"
+    Title="MCCX"
     mc:Ignorable="d">
     <Window.SystemBackdrop>
         <MicaBackdrop />
@@ -22,7 +22,7 @@
             不放 TitleBar.IconSource：任务栏/窗口图标已由 ApplicationIcon + AppWindow.SetIcon 提供，
             标题栏再放一处会同时出现两个 logo。
         -->
-        <TitleBar x:Name="AppTitleBar" Title="MCCX.App" />
+        <TitleBar x:Name="AppTitleBar" Title="MCCX" />
 
         <!--
             The Frame hosts pages for your application content. Add your UI to

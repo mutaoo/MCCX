@@ -113,6 +113,8 @@
                     <TextBlock Grid.Column="0" Text="服务器" VerticalAlignment="Center" />
                     <TextBox Grid.Column="1"
                              x:Name="ServerBox"
+                             IsSpellCheckEnabled="False"
+                             IsTextPredictionEnabled="False"
                              Text="{x:Bind ViewModel.ServerHost, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                              MinWidth="140"
                              PlaceholderText="地址或域名" />
@@ -120,18 +122,24 @@
                     <TextBlock Grid.Column="2" Text="端口" VerticalAlignment="Center" />
                     <TextBox Grid.Column="3"
                              x:Name="PortBox"
+                             IsSpellCheckEnabled="False"
+                             IsTextPredictionEnabled="False"
                              Text="{x:Bind ViewModel.ServerPort, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                              PlaceholderText="25565" />
 
                     <TextBlock Grid.Column="4" Text="用户名" VerticalAlignment="Center" />
                     <TextBox Grid.Column="5"
                              x:Name="UserBox"
+                             IsSpellCheckEnabled="False"
+                             IsTextPredictionEnabled="False"
                              Text="{x:Bind ViewModel.Username, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                              PlaceholderText="离线玩家名" />
 
                     <TextBlock Grid.Column="6" Text="版本" VerticalAlignment="Center" />
                     <TextBox Grid.Column="7"
                              x:Name="VersionBox"
+                             IsSpellCheckEnabled="False"
+                             IsTextPredictionEnabled="False"
                              Text="{x:Bind ViewModel.MinecraftVersion, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                              PlaceholderText="auto" />
 
@@ -179,7 +187,7 @@
                                         ToolTipService.ToolTip="砍怪参数">
                             <!-- DropDownButton 模板本身自带箭头，这里不再重复放 FontIcon -->
                             <DropDownButton.Flyout>
-                                <Flyout>
+                                <Flyout Opened="OnFlyoutOpened">
                                     <StackPanel Spacing="8" Width="250">
                                         <Grid ColumnSpacing="8">
                                             <Grid.ColumnDefinitions>
@@ -189,6 +197,8 @@
                                             <TextBlock Text="距离" VerticalAlignment="Center" />
                                             <TextBox Grid.Column="1"
                                                      AutomationProperties.Name="攻击距离"
+                                                     IsSpellCheckEnabled="False"
+                                                     IsTextPredictionEnabled="False"
                                                      Text="{x:Bind ViewModel.AttackRange, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
                                         </Grid>
                                         <Grid ColumnSpacing="8">
@@ -199,6 +209,8 @@
                                             <TextBlock Text="冷却下限" VerticalAlignment="Center" />
                                             <TextBox Grid.Column="1"
                                                      AutomationProperties.Name="冷却下限"
+                                                     IsSpellCheckEnabled="False"
+                                                     IsTextPredictionEnabled="False"
                                                      Text="{x:Bind ViewModel.AttackCooldownMin, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
                                         </Grid>
                                         <Grid ColumnSpacing="8">
@@ -209,6 +221,8 @@
                                             <TextBlock Text="冷却上限" VerticalAlignment="Center" />
                                             <TextBox Grid.Column="1"
                                                      AutomationProperties.Name="冷却上限"
+                                                     IsSpellCheckEnabled="False"
+                                                     IsTextPredictionEnabled="False"
                                                      Text="{x:Bind ViewModel.AttackCooldownMax, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
                                         </Grid>
                                         <TextBlock Text="冷却取下限~上限之间的随机值（ms），带随机抖动。"
@@ -231,7 +245,7 @@
                                         ToolTipService.ToolTip="鼠标参数">
                             <!-- DropDownButton 模板本身自带箭头，这里不再重复放 FontIcon -->
                             <DropDownButton.Flyout>
-                                <Flyout>
+                                <Flyout Opened="OnFlyoutOpened">
                                     <StackPanel Spacing="8" Width="250">
                                         <Grid ColumnSpacing="8">
                                             <Grid.ColumnDefinitions>
@@ -268,6 +282,8 @@
                                             <TextBlock Text="按住 ms" VerticalAlignment="Center" />
                                             <TextBox Grid.Column="1"
                                                      AutomationProperties.Name="按住毫秒"
+                                                     IsSpellCheckEnabled="False"
+                                                     IsTextPredictionEnabled="False"
                                                      Text="{x:Bind ViewModel.MouseHoldMs, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
                                         </Grid>
                                         <Grid ColumnSpacing="8">
@@ -278,6 +294,8 @@
                                             <TextBlock Text="间隔 ms" VerticalAlignment="Center" />
                                             <TextBox Grid.Column="1"
                                                      AutomationProperties.Name="间隔毫秒"
+                                                     IsSpellCheckEnabled="False"
+                                                     IsTextPredictionEnabled="False"
                                                      Text="{x:Bind ViewModel.MouseIntervalMs, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
                                         </Grid>
                                         <Grid ColumnSpacing="8">
@@ -288,6 +306,8 @@
                                             <TextBlock Text="抖动 %" VerticalAlignment="Center" />
                                             <TextBox Grid.Column="1"
                                                      AutomationProperties.Name="抖动百分比"
+                                                     IsSpellCheckEnabled="False"
+                                                     IsTextPredictionEnabled="False"
                                                      Text="{x:Bind ViewModel.MouseJitterPercent, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
                                         </Grid>
                                     </StackPanel>
@@ -314,7 +334,7 @@
                                         ToolTipService.ToolTip="重连参数">
                             <!-- DropDownButton 模板本身自带箭头，这里不再重复放 FontIcon -->
                             <DropDownButton.Flyout>
-                                <Flyout>
+                                <Flyout Opened="OnFlyoutOpened">
                                     <StackPanel Spacing="8" Width="250">
                                         <Grid ColumnSpacing="8">
                                             <Grid.ColumnDefinitions>
@@ -324,6 +344,8 @@
                                             <TextBlock Text="次数" VerticalAlignment="Center" />
                                             <TextBox Grid.Column="1"
                                                      AutomationProperties.Name="重连次数"
+                                                     IsSpellCheckEnabled="False"
+                                                     IsTextPredictionEnabled="False"
                                                      Text="{x:Bind ViewModel.ReconnectAttempts, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
                                         </Grid>
                                         <Grid ColumnSpacing="8">
@@ -334,6 +356,8 @@
                                             <TextBlock Text="间隔 ms" VerticalAlignment="Center" />
                                             <TextBox Grid.Column="1"
                                                      AutomationProperties.Name="重连间隔"
+                                                     IsSpellCheckEnabled="False"
+                                                     IsTextPredictionEnabled="False"
                                                      Text="{x:Bind ViewModel.ReconnectDelayMs, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
                                         </Grid>
                                         <TextBlock Text="断线后按次数与间隔自动重连。"
@@ -380,6 +404,8 @@
 
                 <TextBox Grid.Column="0"
                          x:Name="CommandBox"
+                         IsSpellCheckEnabled="False"
+                         IsTextPredictionEnabled="False"
                          Text="{x:Bind ViewModel.CommandInput, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                          PlaceholderText="聊天或 MCC 命令（/ 开头为内部命令），回车发送"
                          KeyDown="CommandBox_KeyDown" />

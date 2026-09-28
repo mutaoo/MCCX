@@ -19,18 +19,26 @@
     -->
     <StackPanel Spacing="10" Width="360">
         <TextBox x:Name="NewServerBox"
+                 IsSpellCheckEnabled="False"
+                 IsTextPredictionEnabled="False"
                  Header="服务器"
                  PlaceholderText="IP 或域名（可写 域名:端口）"
                  AutomationProperties.Name="添加服务器" />
         <TextBox x:Name="NewPortBox"
+                 IsSpellCheckEnabled="False"
+                 IsTextPredictionEnabled="False"
                  Header="端口"
                  PlaceholderText="留空 = 25565（域名会先查 SRV）"
                  AutomationProperties.Name="添加端口" />
         <TextBox x:Name="NewUserBox"
+                 IsSpellCheckEnabled="False"
+                 IsTextPredictionEnabled="False"
                  Header="游戏名"
                  PlaceholderText="离线玩家名"
                  AutomationProperties.Name="添加游戏名" />
         <TextBox x:Name="NewVersionBox"
+                 IsSpellCheckEnabled="False"
+                 IsTextPredictionEnabled="False"
                  Header="版本"
                  PlaceholderText="auto"
                  AutomationProperties.Name="添加版本" />

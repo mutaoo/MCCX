@@ -9,7 +9,7 @@ using MCCX.Core.Networking;
 //   2) MCC 连服链路自测  : dotnet run --project MCCX.SmokeTest -- [host] [port] [version]
 //   例                   : dotnet run --project MCCX.SmokeTest -- 127.0.0.1 25565 auto
 //   3) 端口解析自测      : dotnet run --project MCCX.SmokeTest -- --port [srv <域名>]
-//   4) 多开子进程自测    : dotnet run --project MCCX.SmokeTest -- --runner <MCCX.App.exe 路径> [host] [port]
+//   4) 多开子进程自测    : dotnet run --project MCCX.SmokeTest -- --runner <MCCX.exe 路径> [host] [port]
 
 if (args.Length > 0 && args[0] == "--accounts")
     return RunAccountStoreTest();
@@ -282,14 +282,14 @@ static async Task<int> RunPortResolveTest(string[] rest)
     return 0;
 }
 
-// 多开子进程链路自测：主进程（本测试）当“界面”，用 RunnerProcess 拉起 MCCX.App.exe --runner，
+// 多开子进程链路自测：主进程（本测试）当“界面”，用 RunnerProcess 拉起 MCCX.exe --runner，
 // 验证 管道通信 / 日志回传 / 连接 / 进入游戏 / 自动化配置 / 断开 / 子进程退出。
-//   用法: dotnet run --project MCCX.SmokeTest -- --runner <MCCX.App.exe 路径> [host] [port]
+//   用法: dotnet run --project MCCX.SmokeTest -- --runner <MCCX.exe 路径> [host] [port]
 static async Task<int> RunRunnerProcessTest(string[] rest)
 {
     if (rest.Length == 0)
     {
-        Console.WriteLine("[TEST] FAIL: 用法: --runner <MCCX.App.exe 路径> [host] [port]");
+        Console.WriteLine("[TEST] FAIL: 用法: --runner <MCCX.exe 路径> [host] [port]");
         return 30;
     }
 

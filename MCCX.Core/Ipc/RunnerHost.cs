@@ -4,7 +4,7 @@ using System.Text;
 namespace MCCX.Core.Ipc;
 
 /// <summary>
-/// 多开子进程侧的宿主：界面用 <c>MCCX.App.exe --runner --cmd &lt;句柄&gt; --evt &lt;句柄&gt;</c>
+/// 多开子进程侧的宿主：界面用 <c>MCCX.exe --runner --cmd &lt;句柄&gt; --evt &lt;句柄&gt;</c>
 /// 启动本类，跑一个完全独立的 MCC 会话（日志、输入、状态互不串台）。
 ///
 /// 与父进程的通道是两条匿名管道：

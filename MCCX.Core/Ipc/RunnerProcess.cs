@@ -8,7 +8,7 @@ namespace MCCX.Core.Ipc;
 /// 多开子进程在主进程这一侧的代理：实现 <see cref="IAccountSession"/>，
 /// 界面把它当普通会话用（连接/断开/发输入/自动化开关），实际工作都在子进程里完成。
 ///
-/// 进程模型：每个账号一个独立的 <c>MCCX.App.exe --runner</c> 子进程，
+/// 进程模型：每个账号一个独立的 <c>MCCX.exe --runner</c> 子进程，
 /// 两条匿名管道（父写子读=命令、子写父读=事件）承担全部通信。
 /// 好处：日志天然不串台、输入天然不抢路由、一个账号崩了不影响其它账号。
 ///
@@ -40,7 +40,7 @@ public sealed class RunnerProcess : IAccountSession
     private bool _disposed;
     private TaskCompletionSource<MCCConnectionState>? _connectTcs;
 
-    /// <summary>exePath 留空时用当前进程（界面里就是 MCCX.App.exe 自己）。</summary>
+    /// <summary>exePath 留空时用当前进程（界面里就是 MCCX.exe 自己）。</summary>
     public RunnerProcess(string? exePath = null)
     {
         _exePath = exePath
