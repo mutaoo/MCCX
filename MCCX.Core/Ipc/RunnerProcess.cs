@@ -472,6 +472,8 @@ public sealed class RunnerProcess : IAccountSession
             Range = options.Range,
             CooldownMinMs = options.CooldownMinMs,
             CooldownMaxMs = options.CooldownMaxMs,
+            FilterMode = (int)options.FilterMode,
+            Mobs = [.. options.Mobs],
         });
     }
 
@@ -482,11 +484,17 @@ public sealed class RunnerProcess : IAccountSession
         {
             Type = RunnerMessage.CmdMouse,
             On = enabled,
-            Mode = (int)options.Mode,
-            Side = (int)options.Side,
-            HoldMs = options.HoldMs,
-            IntervalMs = options.IntervalMs,
-            JitterPercent = options.JitterPercent,
+            LeftOn = options.Left.Enabled,
+            LeftMode = (int)options.Left.Mode,
+            LeftHoldMs = options.Left.HoldMs,
+            LeftIntervalMs = options.Left.IntervalMs,
+            LeftJitterPercent = options.Left.JitterPercent,
+            RightOn = options.Right.Enabled,
+            RightMode = (int)options.Right.Mode,
+            RightHoldMs = options.Right.HoldMs,
+            RightIntervalMs = options.Right.IntervalMs,
+            RightJitterPercent = options.Right.JitterPercent,
+            Reach = options.AimReach,
         });
     }
 
@@ -509,6 +517,7 @@ public sealed class RunnerProcess : IAccountSession
     public void Dispose()
     {
         Process? process;
+        bool exited = true;
 
         lock (_gate)
         {
@@ -517,7 +526,9 @@ public sealed class RunnerProcess : IAccountSession
 
             _disposed = true;
             process = _process;
-            _running = false;
+            // 注意：_running 要等 CmdQuit 送完、进程退出（或超时 Kill）之后再翻，
+            // 否则 SendOrThrow 检查 !_running 直接抛异常，CmdQuit 永远送不出去，
+            // 每次关窗都白等 ExitWaitMs 超时后才 Kill（关窗卡顿的根因之一）。
         }
 
         try
@@ -534,7 +545,8 @@ public sealed class RunnerProcess : IAccountSession
                     // 管道已经不通就直接等 Kill
                 }
 
-                if (!process.WaitForExit(ExitWaitMs))
+                exited = process.WaitForExit(ExitWaitMs);
+                if (!exited)
                     process.Kill(entireProcessTree: true);
             }
         }
@@ -545,6 +557,7 @@ public sealed class RunnerProcess : IAccountSession
 
         lock (_gate)
         {
+            _running = false;
             DisposePipesLocked();
             _state = MCCConnectionState.Disconnected;
             _gameJoined = false;

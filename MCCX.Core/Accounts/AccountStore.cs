@@ -202,6 +202,8 @@ public sealed class AccountStore : IDisposable
                 existing.MinecraftVersion = profile.MinecraftVersion;
                 existing.DisplayName = profile.DisplayName;
                 existing.Credential = profile.Credential;
+                existing.AttackFilterMode = profile.AttackFilterMode;
+                existing.AttackFilterMobs = profile.AttackFilterMobs;
                 existing.LastUsedAt = profile.LastUsedAt;
                 profile = existing;
             }
@@ -223,6 +225,30 @@ public sealed class AccountStore : IDisposable
             if (removed == 0)
                 return false;
 
+            PersistLocked();
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// 只更新一个账号的攻击生物过滤设置并落盘。
+    /// 不碰 LastUsedAt：改个勾选不该把账号顶到“最近使用”、打乱左侧列表顺序。
+    /// </summary>
+    /// <returns>是否命中该账号。</returns>
+    public bool UpdateAttackFilter(string id, int mode, IReadOnlyList<string> mobs)
+    {
+        ArgumentNullException.ThrowIfNull(mobs);
+
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+
+            AccountProfile? account = _accounts.FirstOrDefault(a => a.Id == id);
+            if (account is null)
+                return false;
+
+            account.AttackFilterMode = mode;
+            account.AttackFilterMobs = [.. mobs];
             PersistLocked();
             return true;
         }

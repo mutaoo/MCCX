@@ -31,12 +31,30 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         nameof(AttackRange),
         nameof(AttackCooldownMin),
         nameof(AttackCooldownMax),
+        nameof(AttackFilterModeIndex),
+        nameof(AttackFilterHostile),
+        nameof(AttackFilterNeutral),
+        nameof(AttackFilterFriendly),
+        nameof(AttackFilterHostileAll),
+        nameof(AttackFilterNeutralAll),
+        nameof(AttackFilterFriendlyAll),
         nameof(MouseEnabled),
-        nameof(MouseModeIndex),
-        nameof(MouseSideIndex),
-        nameof(MouseHoldMs),
-        nameof(MouseIntervalMs),
-        nameof(MouseJitterPercent),
+        nameof(MouseLeftEnabled),
+        nameof(MouseLeftModeIndex),
+        nameof(MouseLeftHoldMs),
+        nameof(MouseLeftIntervalMs),
+        nameof(MouseLeftJitterPercent),
+        nameof(MouseRightEnabled),
+        nameof(MouseRightModeIndex),
+        nameof(MouseRightHoldMs),
+        nameof(MouseRightIntervalMs),
+        nameof(MouseRightJitterPercent),
+        nameof(MouseAimReach),
+        nameof(MouseAimReachText),
+        nameof(MouseLeftTimingVisible),
+        nameof(MouseRightTimingVisible),
+        nameof(MouseLeftHoldVisible),
+        nameof(MouseRightHoldVisible),
         nameof(FishingEnabled),
         nameof(ReconnectEnabled),
         nameof(ReconnectAttempts),
@@ -49,6 +67,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private readonly DispatcherQueue _dispatcherQueue;
     private readonly AccountStore _accountStore = new();
     private readonly ObservableCollection<LogEntry> _noAccountLogs = [];
+
+    /// <summary>没有选中账号时过滤列表的占位（空；这时右侧面板本来就是隐藏的）。</summary>
+    private static readonly ObservableCollection<MobFilterItem> NoFilterItems = [];
 
     private AccountViewModel? _selectedAccount;
 
@@ -73,7 +94,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             () => SelectedAccount?.ClearLogCommand.Execute(null),
             () => SelectedAccount is not null);
         AddAccountCommand = new RelayCommand(() => RequestAddAccount?.Invoke());
-        DeleteAccountCommand = new RelayCommand(DeleteSelectedAccount, () => SelectedAccount is not null);
+
+        // 删除由账号项右侧的叉号触发（带二次确认），参数就是被点的那个账号，不一定是当前选中项
+        DeleteAccountCommand = new RelayCommand<AccountViewModel>(DeleteAccount, account => account is not null);
 
         ReloadAccounts();
 
@@ -100,7 +123,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     /// <summary>弹出“添加账号”窗口（界面负责显示窗口，拿到结果后回调 <see cref="AddAccount"/>）。</summary>
     public RelayCommand AddAccountCommand { get; }
 
-    public RelayCommand DeleteAccountCommand { get; }
+    /// <summary>删除指定账号（结束它的子进程 + 从加密账号库移除）。参数是被点叉号的那个账号。</summary>
+    public RelayCommand<AccountViewModel> DeleteAccountCommand { get; }
 
     /// <summary>界面订阅：用户点了“添加账号”按钮。</summary>
     public event Action? RequestAddAccount;
@@ -237,6 +261,69 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    /// <summary>攻击生物过滤模式：0 不过滤（仅敌对）/ 1 白名单 / 2 黑名单。</summary>
+    public int AttackFilterModeIndex
+    {
+        get => Pick(a => a.AttackFilterModeIndex, 0);
+        set
+        {
+            if (SelectedAccount is { } account)
+                account.AttackFilterModeIndex = value;
+        }
+    }
+
+    /// <summary>过滤列表：敌对生物（选中账号的列表，切账号时整体换掉）。</summary>
+    public ObservableCollection<MobFilterItem> AttackFilterHostile =>
+        Pick(a => a.AttackFilterHostile, NoFilterItems);
+
+    /// <summary>过滤列表：中立生物。</summary>
+    public ObservableCollection<MobFilterItem> AttackFilterNeutral =>
+        Pick(a => a.AttackFilterNeutral, NoFilterItems);
+
+    /// <summary>过滤列表：友好生物。</summary>
+    public ObservableCollection<MobFilterItem> AttackFilterFriendly =>
+        Pick(a => a.AttackFilterFriendly, NoFilterItems);
+
+    /// <summary>“全选”框（敌对分类）：读值=该分类是否全勾，写入=整类全选/全不选。</summary>
+    public bool AttackFilterHostileAll
+    {
+        get => Pick(a => a.AttackFilterHostileAll, false);
+        set
+        {
+            if (SelectedAccount is { } account)
+                account.AttackFilterHostileAll = value;
+        }
+    }
+
+    /// <summary>“全选”框（中立分类）。</summary>
+    public bool AttackFilterNeutralAll
+    {
+        get => Pick(a => a.AttackFilterNeutralAll, false);
+        set
+        {
+            if (SelectedAccount is { } account)
+                account.AttackFilterNeutralAll = value;
+        }
+    }
+
+    /// <summary>“全选”框（友好分类）。</summary>
+    public bool AttackFilterFriendlyAll
+    {
+        get => Pick(a => a.AttackFilterFriendlyAll, false);
+        set
+        {
+            if (SelectedAccount is { } account)
+                account.AttackFilterFriendlyAll = value;
+        }
+    }
+
+    /// <summary>分组标题（带数量）。候选目录对所有账号都一样，所以不参与账号镜像。</summary>
+    public string AttackFilterHostileHeader => $"敌对生物（{MobCatalog.Hostile.Count}）";
+
+    public string AttackFilterNeutralHeader => $"中立生物（{MobCatalog.Neutral.Count}）";
+
+    public string AttackFilterFriendlyHeader => $"友好生物（{MobCatalog.Friendly.Count}）";
+
     public bool MouseEnabled
     {
         get => Pick(a => a.MouseEnabled, false);
@@ -247,55 +334,131 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    public int MouseModeIndex
+    public bool MouseLeftEnabled
     {
-        get => Pick(a => a.MouseModeIndex, (int)MouseMode.IntervalClick);
+        get => Pick(a => a.MouseLeftEnabled, false);
         set
         {
             if (SelectedAccount is { } account)
-                account.MouseModeIndex = value;
+                account.MouseLeftEnabled = value;
         }
     }
 
-    public int MouseSideIndex
+    public int MouseLeftModeIndex
     {
-        get => Pick(a => a.MouseSideIndex, (int)MouseSide.Right);
+        get => Pick(a => a.MouseLeftModeIndex, (int)MouseMode.IntervalClick);
         set
         {
             if (SelectedAccount is { } account)
-                account.MouseSideIndex = value;
+                account.MouseLeftModeIndex = value;
         }
     }
 
-    public string MouseHoldMs
+    public string MouseLeftHoldMs
     {
-        get => Pick(a => a.MouseHoldMs, "1000");
+        get => Pick(a => a.MouseLeftHoldMs, "1000");
         set
         {
             if (SelectedAccount is { } account)
-                account.MouseHoldMs = value;
+                account.MouseLeftHoldMs = value;
         }
     }
 
-    public string MouseIntervalMs
+    public string MouseLeftIntervalMs
     {
-        get => Pick(a => a.MouseIntervalMs, "600");
+        get => Pick(a => a.MouseLeftIntervalMs, "600");
         set
         {
             if (SelectedAccount is { } account)
-                account.MouseIntervalMs = value;
+                account.MouseLeftIntervalMs = value;
         }
     }
 
-    public string MouseJitterPercent
+    public string MouseLeftJitterPercent
     {
-        get => Pick(a => a.MouseJitterPercent, "20");
+        get => Pick(a => a.MouseLeftJitterPercent, "20");
         set
         {
             if (SelectedAccount is { } account)
-                account.MouseJitterPercent = value;
+                account.MouseLeftJitterPercent = value;
         }
     }
+
+    public bool MouseRightEnabled
+    {
+        get => Pick(a => a.MouseRightEnabled, true);
+        set
+        {
+            if (SelectedAccount is { } account)
+                account.MouseRightEnabled = value;
+        }
+    }
+
+    public int MouseRightModeIndex
+    {
+        get => Pick(a => a.MouseRightModeIndex, (int)MouseMode.IntervalClick);
+        set
+        {
+            if (SelectedAccount is { } account)
+                account.MouseRightModeIndex = value;
+        }
+    }
+
+    public string MouseRightHoldMs
+    {
+        get => Pick(a => a.MouseRightHoldMs, "1000");
+        set
+        {
+            if (SelectedAccount is { } account)
+                account.MouseRightHoldMs = value;
+        }
+    }
+
+    public string MouseRightIntervalMs
+    {
+        get => Pick(a => a.MouseRightIntervalMs, "600");
+        set
+        {
+            if (SelectedAccount is { } account)
+                account.MouseRightIntervalMs = value;
+        }
+    }
+
+    public string MouseRightJitterPercent
+    {
+        get => Pick(a => a.MouseRightJitterPercent, "20");
+        set
+        {
+            if (SelectedAccount is { } account)
+                account.MouseRightJitterPercent = value;
+        }
+    }
+
+    /// <summary>准星探测距离（格，1-7，默认 5）。</summary>
+    public double MouseAimReach
+    {
+        get => Pick(a => a.MouseAimReach, 5.0);
+        set
+        {
+            if (SelectedAccount is { } account)
+                account.MouseAimReach = value;
+        }
+    }
+
+    /// <summary>距离滑块旁的数值文案，如“5 格”。</summary>
+    public string MouseAimReachText => Pick(a => a.MouseAimReachText, "5 格");
+
+    /// <summary>左键“间隔 ms”行：长按模式下不生效即隐藏（间隔点击/间隔长按显示）。</summary>
+    public bool MouseLeftTimingVisible => MouseLeftModeIndex != 0;
+
+    /// <summary>右键“间隔 ms”行：长按模式下不生效即隐藏（间隔点击/间隔长按显示）。</summary>
+    public bool MouseRightTimingVisible => MouseRightModeIndex != 0;
+
+    /// <summary>左键“按住 ms”行：按住时长是间隔长按的参数，只有它显示（其余模式隐藏）。</summary>
+    public bool MouseLeftHoldVisible => MouseLeftModeIndex == 2;
+
+    /// <summary>右键“按住 ms”行：按住时长是间隔长按的参数，只有它显示（其余模式隐藏）。</summary>
+    public bool MouseRightHoldVisible => MouseRightModeIndex == 2;
 
     public bool FishingEnabled
     {
@@ -398,7 +561,14 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         AccountViewModel account = new(profile, _dispatcherQueue);
         account.Connected += OnAccountConnected;
+        account.AttackFilterChanged += OnAccountFilterChanged;
         return account;
+    }
+
+    private void DetachAccount(AccountViewModel account)
+    {
+        account.Connected -= OnAccountConnected;
+        account.AttackFilterChanged -= OnAccountFilterChanged;
     }
 
     private void ReloadAccounts()
@@ -407,7 +577,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         foreach (AccountViewModel old in Accounts)
         {
-            old.Connected -= OnAccountConnected;
+            DetachAccount(old);
             old.Dispose();
         }
 
@@ -482,17 +652,25 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         return true;
     }
 
-    private void DeleteSelectedAccount()
+    /// <summary>
+    /// 删除指定账号：从左侧列表移除 → 关掉它的子进程 → 从加密账号库删掉 → 选中项顺延。
+    /// 由账号项右侧的叉号（二次确认后）调用，删的不一定是当前选中的账号。
+    /// </summary>
+    private void DeleteAccount(AccountViewModel? target)
     {
-        AccountViewModel? target = SelectedAccount;
-        if (target is null)
+        if (target is null || !Accounts.Contains(target))
             return;
 
         int index = Accounts.IndexOf(target);
 
         Accounts.Remove(target);
-        target.Connected -= OnAccountConnected;
+        DetachAccount(target);
         target.Dispose();
+
+        // 删除的是最后一个账号 → 右侧面板回到空白页；否则选中相邻项
+        SelectedAccount = Accounts.Count == 0
+            ? null
+            : Accounts[Math.Clamp(index, 0, Accounts.Count - 1)];
 
         try
         {
@@ -504,11 +682,6 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             SelectedAccount?.WriteNote($"§c删除账号失败：{ex.Message}");
         }
-
-        // 删除的是最后一个账号 → 右侧面板回到空白页
-        SelectedAccount = Accounts.Count == 0
-            ? null
-            : Accounts[Math.Clamp(index, 0, Accounts.Count - 1)];
 
         SelectedAccount?.WriteNote($"§8已删除账号 {target.DisplayName}。");
     }
@@ -530,13 +703,35 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    /// <summary>
+    /// 攻击生物过滤改了 → 写回加密账号库，重启后还在。
+    /// 用专门的 UpdateAttackFilter 而不是 Upsert：改个勾选不该把账号顶到“最近使用”打乱左侧顺序。
+    /// </summary>
+    private void OnAccountFilterChanged(AccountViewModel account)
+    {
+        try
+        {
+            bool saved = _accountStore.UpdateAttackFilter(
+                account.Id, account.AttackFilterModeIndex, account.SelectedAttackMobs);
+
+            if (!saved)
+                account.WriteNote("§e攻击过滤未保存：账号库里没有这个账号，重启后会恢复默认。");
+            else if (!string.IsNullOrEmpty(_accountStore.LastError))
+                account.WriteNote($"§c攻击过滤保存失败：{_accountStore.LastError}");
+        }
+        catch (Exception ex)
+        {
+            account.WriteNote($"§c攻击过滤保存失败：{ex.Message}");
+        }
+    }
+
     #endregion
 
     public void Dispose()
     {
         foreach (AccountViewModel account in Accounts)
         {
-            account.Connected -= OnAccountConnected;
+            DetachAccount(account);
             account.Dispose();
         }
 

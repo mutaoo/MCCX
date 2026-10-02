@@ -409,20 +409,25 @@ public sealed class MCCSession : IAccountSession
         ArgumentNullException.ThrowIfNull(options);
 
         bool changed;
+        bool filterChanged;
         lock (_gate)
         {
             changed = _attackEnabled != enabled;
+            filterChanged = _attackOptions.FilterMode != options.FilterMode
+                            || !_attackOptions.Mobs.SequenceEqual(options.Mobs);
             _attackEnabled = enabled;
             _attackOptions = options;
         }
 
         if (changed)
             LogUi(enabled ? "§a自动砍怪已开启，进入游戏后生效。" : "§8自动砍怪已关闭。");
+        else if (filterChanged && enabled)
+            LogUi($"§7攻击过滤已更新（{CustomAutoAttackBot.DescribeFilter(options)}）。");
 
         ApplyAutomation();
     }
 
-    /// <summary>设置鼠标按键控制（长按/间隔点击/间隔长按）。</summary>
+    /// <summary>设置鼠标按键控制（左键、右键两套独立参数，可同时触发）。</summary>
     public void ConfigureMouse(bool enabled, MouseOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
@@ -436,7 +441,18 @@ public sealed class MCCSession : IAccountSession
         }
 
         if (changed)
-            LogUi(enabled ? "§a鼠标控制已开启，进入游戏后生效。" : "§8鼠标控制已关闭。");
+        {
+            if (enabled)
+            {
+                LogUi("§a鼠标控制已开启，进入游戏后生效。");
+                if (!options.Left.Enabled && !options.Right.Enabled)
+                    LogUi("§8鼠标控制：左键、右键都未启用，不会产生点击。");
+            }
+            else
+            {
+                LogUi("§8鼠标控制已关闭。");
+            }
+        }
 
         ApplyAutomation();
     }
@@ -785,6 +801,16 @@ public sealed class MCCSession : IAccountSession
         {
             LogUi("§e提示：MCCX 的协议版本与服务器实际版本不一致（Ping 结果只是服务器自己上报的），" +
                   "可以在“版本”框手动指定服务器真实版本后重连。");
+        }
+
+        // 服务器要求客户端装 Fabric 模组才准进（握手成功后被服务端踢出）：
+        // 这不是 MCCX 断线，是服务器侧的准入规则——MCCX 是控制台客户端，带不了 Fabric Loader / Fabric API。
+        if (detail.Contains("Fabric", StringComparison.OrdinalIgnoreCase) ||
+            detail.Contains("installed on your client", StringComparison.OrdinalIgnoreCase))
+        {
+            LogUi("§e提示：这台服务器要求客户端安装 Fabric Loader / Fabric API（模组）才准入，" +
+                  "MCCX 是控制台客户端、带不了 Fabric 模组，所以登录成功后立刻被服务器踢下线。" +
+                  "要进这个服：让服主把该模组改成非必需（或关掉它的客户端检查），否则只能用带 Fabric 的普通客户端进。");
         }
 
         SetState(MCCConnectionState.Disconnected);

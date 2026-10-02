@@ -49,11 +49,14 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
         _serverPort = profile.Port.ToString(CultureInfo.InvariantCulture);
         _username = profile.Username;
         _minecraftVersion = string.IsNullOrWhiteSpace(profile.MinecraftVersion) ? "auto" : profile.MinecraftVersion;
+        _attackFilterModeIndex = Math.Clamp(profile.AttackFilterMode, 0, 2);
 
         ConnectCommand = new AsyncRelayCommand(ConnectAsync, () => !IsConnected);
         DisconnectCommand = new RelayCommand(Disconnect, () => IsConnected);
         SendCommand = new RelayCommand(SendInput, () => IsConnected);
         ClearLogCommand = new RelayCommand(ClearLog);
+
+        BuildAttackFilterItems(profile);
 
         _session.LogReceived += OnLogReceived;
         _session.StateChanged += OnStateChanged;
@@ -66,6 +69,33 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
         ApplyMouse();
         ApplyReconnect();
     }
+
+    /// <summary>
+    /// 按候选生物目录生成本账号的过滤勾选列表（敌对 / 中立 / 友好各一份），
+    /// 勾选状态从账号库里读出来的名单回填。事件在回填之后才挂，避免启动就写盘。
+    /// </summary>
+    private void BuildAttackFilterItems(AccountProfile profile)
+    {
+        HashSet<string> checkedKeys = profile.AttackFilterMobs is { Count: > 0 } keys
+            ? new(keys, StringComparer.Ordinal)
+            : [];
+
+        foreach (MobCandidate candidate in MobCatalog.All)
+        {
+            MobFilterItem item = new(candidate, checkedKeys.Contains(candidate.Key));
+            item.CheckedChanged += OnAttackFilterChanged;
+            _attackFilterItems.Add(item);
+            AttackFilterItems(candidate.Category).Add(item);
+        }
+    }
+
+    /// <summary>某个分类的勾选列表。</summary>
+    private ObservableCollection<MobFilterItem> AttackFilterItems(MobCategory category) => category switch
+    {
+        MobCategory.Hostile => AttackFilterHostile,
+        MobCategory.Neutral => AttackFilterNeutral,
+        _ => AttackFilterFriendly,
+    };
 
     /// <summary>连接成功（子会话进入 Connected）：主 ViewModel 用它把最新参数写回加密账号库。</summary>
     public event Action<AccountViewModel>? Connected;
@@ -136,8 +166,20 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
     public string StateText
     {
         get => _stateText;
-        private set => SetProperty(ref _stateText, value);
+        private set
+        {
+            if (SetProperty(ref _stateText, value))
+                OnPropertyChanged(nameof(StateBadge));
+        }
     }
+
+    /// <summary>
+    /// 列表项右侧的紧凑状态：只留状态词（已连接 / 连接中… / 未连接）。
+    /// 完整的“已连接 host:port”在右侧面板状态条里显示，窄列塞不下地址。
+    /// </summary>
+    public string StateBadge => _stateText.StartsWith("已连接", StringComparison.Ordinal)
+        ? "已连接"
+        : _stateText;
 
     public bool IsConnected
     {
@@ -162,12 +204,21 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
     private string _attackCooldownMin = "800";
     private string _attackCooldownMax = "1600";
 
+    private int _attackFilterModeIndex;
+    private readonly List<MobFilterItem> _attackFilterItems = [];
+
     private bool _mouseEnabled;
-    private int _mouseModeIndex = (int)MouseMode.IntervalClick;
-    private int _mouseSideIndex = (int)MouseSide.Right;
-    private string _mouseHoldMs = "1000";
-    private string _mouseIntervalMs = "600";
-    private string _mouseJitterPercent = "20";
+    private bool _mouseLeftEnabled;
+    private int _mouseLeftModeIndex = (int)MouseMode.IntervalClick;
+    private string _mouseLeftHoldMs = "1000";
+    private string _mouseLeftIntervalMs = "600";
+    private string _mouseLeftJitterPercent = "20";
+    private bool _mouseRightEnabled = true;
+    private int _mouseRightModeIndex = (int)MouseMode.IntervalClick;
+    private string _mouseRightHoldMs = "1000";
+    private string _mouseRightIntervalMs = "600";
+    private string _mouseRightJitterPercent = "20";
+    private double _mouseAimReach = 5.0;
 
     private bool _fishingEnabled;
 
@@ -219,6 +270,114 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
         }
     }
 
+    /// <summary>攻击生物过滤：敌对生物（“不过滤”模式打的就是这一桶）。</summary>
+    public ObservableCollection<MobFilterItem> AttackFilterHostile { get; } = [];
+
+    /// <summary>攻击生物过滤：中立生物。</summary>
+    public ObservableCollection<MobFilterItem> AttackFilterNeutral { get; } = [];
+
+    /// <summary>攻击生物过滤：友好生物。</summary>
+    public ObservableCollection<MobFilterItem> AttackFilterFriendly { get; } = [];
+
+    /// <summary>“全选”框：敌对分类是不是已经全勾（勾上=整类全选，取消=整类全不选）。</summary>
+    public bool AttackFilterHostileAll
+    {
+        get => IsCategoryAllChecked(MobCategory.Hostile);
+        set => SetCategoryAllChecked(MobCategory.Hostile, value);
+    }
+
+    /// <summary>“全选”框：中立分类。</summary>
+    public bool AttackFilterNeutralAll
+    {
+        get => IsCategoryAllChecked(MobCategory.Neutral);
+        set => SetCategoryAllChecked(MobCategory.Neutral, value);
+    }
+
+    /// <summary>“全选”框：友好分类。</summary>
+    public bool AttackFilterFriendlyAll
+    {
+        get => IsCategoryAllChecked(MobCategory.Friendly);
+        set => SetCategoryAllChecked(MobCategory.Friendly, value);
+    }
+
+    /// <summary>整类勾选进行中：挡住单项回调，最后统一下发一次。</summary>
+    private bool _bulkFilterUpdate;
+
+    /// <summary>攻击生物过滤模式：0 不过滤（仅敌对）/ 1 白名单 / 2 黑名单。</summary>
+    public int AttackFilterModeIndex
+    {
+        get => _attackFilterModeIndex;
+        set
+        {
+            if (SetProperty(ref _attackFilterModeIndex, value))
+            {
+                ApplyAttack();
+                AttackFilterChanged?.Invoke(this);
+            }
+        }
+    }
+
+    /// <summary>当前勾选的生物名单（EntityType 名）。</summary>
+    public IReadOnlyList<string> SelectedAttackMobs =>
+        _attackFilterItems.Where(static item => item.IsChecked).Select(static item => item.Key).ToArray();
+
+    /// <summary>过滤设置变了（UI 线程触发）：外壳用它把设置写回加密账号库。</summary>
+    public event Action<AccountViewModel>? AttackFilterChanged;
+
+    /// <summary>某个生物被勾/取消：重新下发攻击参数并写回账号库。</summary>
+    private void OnAttackFilterChanged()
+    {
+        // 整类勾选进行中（全选框）：单项回调先不处理，结束时统一下发一次
+        if (_bulkFilterUpdate)
+            return;
+
+        ApplyAttack();
+        AttackFilterChanged?.Invoke(this);
+        RaiseCategoryAllCheckedChanged();
+    }
+
+    /// <summary>某一分类是不是已经全勾（全选框的读值）。</summary>
+    private bool IsCategoryAllChecked(MobCategory category)
+    {
+        ObservableCollection<MobFilterItem> items = AttackFilterItems(category);
+        return items.Count > 0 && items.All(static item => item.IsChecked);
+    }
+
+    /// <summary>
+    /// 全选框写入：整类一起勾/取消。
+    /// 批量期间挡住单项回调（否则敌对 41 项会触发 41 次下发+写盘），结束时统一下发一次。
+    /// </summary>
+    private void SetCategoryAllChecked(MobCategory category, bool value)
+    {
+        ObservableCollection<MobFilterItem> items = AttackFilterItems(category);
+        if (items.Count == 0 || items.All(item => item.IsChecked == value))
+        {
+            RaiseCategoryAllCheckedChanged();
+            return;
+        }
+
+        _bulkFilterUpdate = true;
+        try
+        {
+            foreach (MobFilterItem item in items)
+                item.IsChecked = value;
+        }
+        finally
+        {
+            _bulkFilterUpdate = false;
+        }
+
+        OnAttackFilterChanged();
+    }
+
+    /// <summary>三个全选框的读值刷新给界面（单项勾选变化时也会走，全选框跟着变）。</summary>
+    private void RaiseCategoryAllCheckedChanged()
+    {
+        OnPropertyChanged(nameof(AttackFilterHostileAll));
+        OnPropertyChanged(nameof(AttackFilterNeutralAll));
+        OnPropertyChanged(nameof(AttackFilterFriendlyAll));
+    }
+
     /// <summary>鼠标按键控制开关。</summary>
     public bool MouseEnabled
     {
@@ -230,60 +389,153 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
         }
     }
 
-    /// <summary>鼠标模式：0 长按 / 1 间隔点击 / 2 间隔长按。</summary>
-    public int MouseModeIndex
+    /// <summary>左键启用（与右键相互独立，可以同时开启）。</summary>
+    public bool MouseLeftEnabled
     {
-        get => _mouseModeIndex;
+        get => _mouseLeftEnabled;
         set
         {
-            if (SetProperty(ref _mouseModeIndex, value))
+            if (SetProperty(ref _mouseLeftEnabled, value))
                 ApplyMouse();
         }
     }
 
-    /// <summary>鼠标按键：0 左键 / 1 右键。</summary>
-    public int MouseSideIndex
+    /// <summary>左键模式：0 长按 / 1 间隔点击 / 2 间隔长按。</summary>
+    public int MouseLeftModeIndex
     {
-        get => _mouseSideIndex;
+        get => _mouseLeftModeIndex;
         set
         {
-            if (SetProperty(ref _mouseSideIndex, value))
+            if (SetProperty(ref _mouseLeftModeIndex, value))
+            {
+                OnPropertyChanged(nameof(MouseLeftTimingVisible));
+                OnPropertyChanged(nameof(MouseLeftHoldVisible));
+                ApplyMouse();
+            }
+        }
+    }
+
+    /// <summary>“间隔 ms”行：长按模式下不生效，隐藏；间隔点击/间隔长按显示。</summary>
+    public bool MouseLeftTimingVisible => MouseLeftModeIndex != 0;
+
+    /// <summary>“按住 ms”行：按住时长是间隔长按的参数，只有它显示；长按/间隔点击下不生效即隐藏。</summary>
+    public bool MouseLeftHoldVisible => MouseLeftModeIndex == 2;
+
+    /// <summary>左键保持（按住/蓄力）时长，毫秒。</summary>
+    public string MouseLeftHoldMs
+    {
+        get => _mouseLeftHoldMs;
+        set
+        {
+            if (SetProperty(ref _mouseLeftHoldMs, value))
                 ApplyMouse();
         }
     }
 
-    /// <summary>保持（按住/蓄力）时长，毫秒。</summary>
-    public string MouseHoldMs
+    /// <summary>左键点击间隔 / 冷却时长，毫秒。</summary>
+    public string MouseLeftIntervalMs
     {
-        get => _mouseHoldMs;
+        get => _mouseLeftIntervalMs;
         set
         {
-            if (SetProperty(ref _mouseHoldMs, value))
+            if (SetProperty(ref _mouseLeftIntervalMs, value))
                 ApplyMouse();
         }
     }
 
-    /// <summary>点击间隔 / 冷却时长，毫秒。</summary>
-    public string MouseIntervalMs
+    /// <summary>左键随机抖动百分比（0-90）。</summary>
+    public string MouseLeftJitterPercent
     {
-        get => _mouseIntervalMs;
+        get => _mouseLeftJitterPercent;
         set
         {
-            if (SetProperty(ref _mouseIntervalMs, value))
+            if (SetProperty(ref _mouseLeftJitterPercent, value))
                 ApplyMouse();
         }
     }
 
-    /// <summary>随机抖动百分比（0-90）。</summary>
-    public string MouseJitterPercent
+    /// <summary>右键启用（与左键相互独立，可以同时开启）。</summary>
+    public bool MouseRightEnabled
     {
-        get => _mouseJitterPercent;
+        get => _mouseRightEnabled;
         set
         {
-            if (SetProperty(ref _mouseJitterPercent, value))
+            if (SetProperty(ref _mouseRightEnabled, value))
                 ApplyMouse();
         }
     }
+
+    /// <summary>右键模式：0 长按 / 1 间隔点击 / 2 间隔长按。</summary>
+    public int MouseRightModeIndex
+    {
+        get => _mouseRightModeIndex;
+        set
+        {
+            if (SetProperty(ref _mouseRightModeIndex, value))
+            {
+                OnPropertyChanged(nameof(MouseRightTimingVisible));
+                OnPropertyChanged(nameof(MouseRightHoldVisible));
+                ApplyMouse();
+            }
+        }
+    }
+
+    /// <summary>“间隔 ms”行：长按模式下不生效，隐藏；间隔点击/间隔长按显示。</summary>
+    public bool MouseRightTimingVisible => MouseRightModeIndex != 0;
+
+    /// <summary>“按住 ms”行：按住时长是间隔长按的参数，只有它显示；长按/间隔点击下不生效即隐藏。</summary>
+    public bool MouseRightHoldVisible => MouseRightModeIndex == 2;
+
+    /// <summary>右键保持（按住/蓄力）时长，毫秒。</summary>
+    public string MouseRightHoldMs
+    {
+        get => _mouseRightHoldMs;
+        set
+        {
+            if (SetProperty(ref _mouseRightHoldMs, value))
+                ApplyMouse();
+        }
+    }
+
+    /// <summary>右键点击间隔 / 冷却时长，毫秒。</summary>
+    public string MouseRightIntervalMs
+    {
+        get => _mouseRightIntervalMs;
+        set
+        {
+            if (SetProperty(ref _mouseRightIntervalMs, value))
+                ApplyMouse();
+        }
+    }
+
+    /// <summary>右键随机抖动百分比（0-90）。</summary>
+    public string MouseRightJitterPercent
+    {
+        get => _mouseRightJitterPercent;
+        set
+        {
+            if (SetProperty(ref _mouseRightJitterPercent, value))
+                ApplyMouse();
+        }
+    }
+
+    /// <summary>准星探测距离（格，1-7，默认 5）：滑动条 TwoWay 绑定，写入时夹到范围并取整（等效吸附整格）。</summary>
+    public double MouseAimReach
+    {
+        get => _mouseAimReach;
+        set
+        {
+            double clamped = Math.Round(Math.Clamp(value, 1, 7));
+            if (SetProperty(ref _mouseAimReach, clamped))
+            {
+                OnPropertyChanged(nameof(MouseAimReachText));
+                ApplyMouse();
+            }
+        }
+    }
+
+    /// <summary>距离滑动条右侧的数值文案，如“5 格”。</summary>
+    public string MouseAimReachText => $"{_mouseAimReach:0.#} 格";
 
     /// <summary>自动钓鱼开关（复用 MCC 内置 AutoFishing）。</summary>
     public bool FishingEnabled
@@ -342,16 +594,30 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
             Range = ParseDouble(AttackRange, 3.0, 1.0, 4.0),
             CooldownMinMs = ParseInt(AttackCooldownMin, 800, 50, 60_000),
             CooldownMaxMs = ParseInt(AttackCooldownMax, 1600, 50, 60_000),
+            FilterMode = (MobFilterMode)Math.Clamp(AttackFilterModeIndex, 0, 2),
+            Mobs = SelectedAttackMobs,
         });
 
     private void ApplyMouse() =>
         _session.ConfigureMouse(MouseEnabled, new MouseOptions
         {
-            Mode = (MouseMode)Math.Clamp(MouseModeIndex, 0, 2),
-            Side = (MouseSide)Math.Clamp(MouseSideIndex, 0, 1),
-            HoldMs = ParseInt(MouseHoldMs, 1000, 50, 60_000),
-            IntervalMs = ParseInt(MouseIntervalMs, 600, 50, 60_000),
-            JitterPercent = ParseInt(MouseJitterPercent, 20, 0, 90),
+            Left = new MouseButtonOptions
+            {
+                Enabled = MouseLeftEnabled,
+                Mode = (MouseMode)Math.Clamp(MouseLeftModeIndex, 0, 2),
+                HoldMs = ParseInt(MouseLeftHoldMs, 1000, 50, 60_000),
+                IntervalMs = ParseInt(MouseLeftIntervalMs, 600, 50, 60_000),
+                JitterPercent = ParseInt(MouseLeftJitterPercent, 20, 0, 90),
+            },
+            Right = new MouseButtonOptions
+            {
+                Enabled = MouseRightEnabled,
+                Mode = (MouseMode)Math.Clamp(MouseRightModeIndex, 0, 2),
+                HoldMs = ParseInt(MouseRightHoldMs, 1000, 50, 60_000),
+                IntervalMs = ParseInt(MouseRightIntervalMs, 600, 50, 60_000),
+                JitterPercent = ParseInt(MouseRightJitterPercent, 20, 0, 90),
+            },
+            AimReach = Math.Clamp(MouseAimReach, 1, 7),
         });
 
     private void ApplyReconnect() =>
@@ -530,6 +796,8 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
             Port = port,
             MinecraftVersion = MinecraftVersion.Trim(),
             DisplayName = DisplayName,
+            AttackFilterMode = Math.Clamp(AttackFilterModeIndex, 0, 2),
+            AttackFilterMobs = [.. SelectedAttackMobs],
             CreatedAt = _profile.CreatedAt,
             LastUsedAt = DateTimeOffset.Now,
         };
@@ -579,6 +847,17 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
         foreach (string line in rawText.Replace("\r\n", "\n").Split('\n'))
         {
             string text = ChatBot.GetVerbatim(line);
+
+            // 连续重复合并（需求：多条相同日志不再刷屏）：
+            // 与上一条完全相同的行不新增条目，直接把上一条就地更新成 “原文 xN”。
+            // 只比相邻两条（等价于 uniq -c），O(1) 无额外状态；空行不合并，保留排版。
+            if (text.Length > 0 && Logs.Count > 0
+                && string.Equals(Logs[^1].BaseText, text, StringComparison.Ordinal))
+            {
+                Logs[^1].MergeDuplicate();
+                continue;
+            }
+
             Logs.Add(new LogEntry(text, line));
         }
 

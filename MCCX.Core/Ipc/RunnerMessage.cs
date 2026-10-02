@@ -64,17 +64,39 @@ public sealed class RunnerMessage
     [JsonPropertyName("cmax")]
     public int CooldownMaxMs { get; set; }
 
-    [JsonPropertyName("mode")]
-    public int Mode { get; set; }
+    [JsonPropertyName("lmode")]
+    public int LeftMode { get; set; }
 
-    [JsonPropertyName("side")]
-    public int Side { get; set; }
+    [JsonPropertyName("lhold")]
+    public int LeftHoldMs { get; set; }
 
-    [JsonPropertyName("hold")]
-    public int HoldMs { get; set; }
+    [JsonPropertyName("lint")]
+    public int LeftIntervalMs { get; set; }
 
-    [JsonPropertyName("interval")]
-    public int IntervalMs { get; set; }
+    [JsonPropertyName("ljit")]
+    public int LeftJitterPercent { get; set; }
+
+    [JsonPropertyName("lon")]
+    public bool LeftOn { get; set; }
+
+    [JsonPropertyName("rmode")]
+    public int RightMode { get; set; }
+
+    [JsonPropertyName("rhold")]
+    public int RightHoldMs { get; set; }
+
+    [JsonPropertyName("rint")]
+    public int RightIntervalMs { get; set; }
+
+    [JsonPropertyName("rjit")]
+    public int RightJitterPercent { get; set; }
+
+    [JsonPropertyName("ron")]
+    public bool RightOn { get; set; }
+
+    /// <summary>准星探测距离（格，1-7）：左右键共用。缺省 5（老版本父进程不带该字段时的兜底）。</summary>
+    [JsonPropertyName("reach")]
+    public double Reach { get; set; } = 5.0;
 
     [JsonPropertyName("jitter")]
     public int JitterPercent { get; set; }
@@ -84,6 +106,14 @@ public sealed class RunnerMessage
 
     [JsonPropertyName("delay")]
     public int DelayMs { get; set; }
+
+    /// <summary>砍怪的攻击生物过滤模式（0 不过滤 / 1 白名单 / 2 黑名单）。</summary>
+    [JsonPropertyName("fmode")]
+    public int FilterMode { get; set; }
+
+    /// <summary>过滤名单（EntityType 名）。只在 fmode 非 0 时有意义。</summary>
+    [JsonPropertyName("mobs")]
+    public List<string>? Mobs { get; set; }
 
     public string ToJson() => JsonSerializer.Serialize(this, JsonOptions);
 

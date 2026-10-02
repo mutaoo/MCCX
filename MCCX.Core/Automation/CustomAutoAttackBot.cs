@@ -7,9 +7,12 @@ namespace MCCX.Core;
 /// <summary>
 /// 自定义自动砍怪 Bot（需求 3.2：不使用 MCC 内置的 AutoAttack）。
 ///
-/// 每个 tick 扫描实体，挑出攻击距离内最近的敌对生物，发送“攻击数据包 + 挥手动画”；
+/// 每个 tick 扫描实体，挑出攻击距离内最近的目标，发送“攻击数据包 + 挥手动画”；
 /// 攻击冷却在 [CooldownMinMs, CooldownMaxMs] 内随机，避免固定节奏被判定为机器人。
 /// 伤害日志来自服务端回包（<see cref="OnEntityHealth"/>），可直接验证打怪是否真实生效。
+///
+/// 目标范围由 <see cref="AttackOptions.FilterMode"/> 决定（白名单 / 黑名单，候选生物见 <see cref="MobCatalog"/>）：
+/// 不过滤时只打敌对生物；玩家、掉落物、矿车船、盔甲架这类非生物永远不碰。
 /// </summary>
 internal sealed class CustomAutoAttackBot : ChatBot
 {
@@ -19,6 +22,10 @@ internal sealed class CustomAutoAttackBot : ChatBot
 
     private int _cooldownTicks;
     private int? _lastTargetId;
+
+    /// <summary>过滤名单缓存：options 引用变了才重建，避免每个 tick 解析字符串。</summary>
+    private AttackOptions? _filterSource;
+    private HashSet<EntityType>? _filterSet;
 
     /// <summary>只有见过非零生命值，才认为实体生命字段可靠，用于跳过“尸体”。</summary>
     private bool _sawHealth;
@@ -52,6 +59,7 @@ internal sealed class CustomAutoAttackBot : ChatBot
 
         AttackOptions o = _options;
         LogToConsole($"§a[砍怪] 已开启：距离 {o.Range:0.#} 格，冷却 {o.CooldownMinMs}-{o.CooldownMaxMs} ms（随机）。");
+        LogToConsole($"§a[砍怪] {DescribeFilter(o)}。");
     }
 
     public override void AfterGameJoined()
@@ -82,8 +90,8 @@ internal sealed class CustomAutoAttackBot : ChatBot
         {
             Entity entity = pair.Value;
 
-            // 只打敌对生物，玩家/掉落物/被动生物一律跳过
-            if (!entity.Type.IsHostile())
+            // 玩家/掉落物/矿车船等非生物不进候选；生物则按过滤模式判定
+            if (!ShouldAttack(entity.Type, o))
                 continue;
 
             if (_sawHealth && entity.Health <= 0)
@@ -153,6 +161,52 @@ internal sealed class CustomAutoAttackBot : ChatBot
             LogToConsole($"§8[砍怪] {entity.GetTypeString()} 已消失。");
         }
     }
+
+    /// <summary>这个实体类型在当前过滤模式下是不是合法目标。</summary>
+    private bool ShouldAttack(EntityType type, AttackOptions o)
+    {
+        if (!MobCatalog.IsAttackable(type))
+            return false;
+
+        switch (o.FilterMode)
+        {
+            case MobFilterMode.Whitelist:
+                return GetFilterSet(o).Contains(type);
+
+            case MobFilterMode.Blacklist:
+                return !GetFilterSet(o).Contains(type);
+
+            default:
+                // 不过滤：只打敌对（含目录没收录、但 MCC 认识的敌对生物）
+                return MobCatalog.IsHostile(type);
+        }
+    }
+
+    /// <summary>过滤名单缓存：参数对象没变就不重复解析字符串（每个 tick 都会走到这里）。</summary>
+    private HashSet<EntityType> GetFilterSet(AttackOptions o)
+    {
+        if (_filterSet is not null && ReferenceEquals(_filterSource, o))
+            return _filterSet;
+
+        HashSet<EntityType> set = [];
+        foreach (string key in o.Mobs)
+        {
+            if (Enum.TryParse(key, out EntityType type))
+                set.Add(type);
+        }
+
+        _filterSource = o;
+        _filterSet = set;
+        return set;
+    }
+
+    /// <summary>过滤设置的一句话描述，用于开启/变更时的提示日志。</summary>
+    internal static string DescribeFilter(AttackOptions o) => o.FilterMode switch
+    {
+        MobFilterMode.Whitelist => $"白名单：只打勾选的 {o.Mobs.Count} 种生物",
+        MobFilterMode.Blacklist => $"黑名单：勾选的 {o.Mobs.Count} 种生物不打，其余候选生物全打",
+        _ => "不过滤，只打敌对生物",
+    };
 
     /// <summary>把冷却毫秒数（含随机抖动）换算成 tick。</summary>
     private int RandomCooldownTicks(int minMs, int maxMs)

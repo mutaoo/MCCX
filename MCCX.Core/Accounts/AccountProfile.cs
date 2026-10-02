@@ -27,6 +27,12 @@ public sealed class AccountProfile
     /// <summary>凭据（离线模式为 null，加密存储）。</summary>
     public string? Credential { get; set; }
 
+    /// <summary>自动砍怪的攻击生物过滤模式：0 不过滤 / 1 白名单 / 2 黑名单（对应 MobFilterMode）。</summary>
+    public int AttackFilterMode { get; set; }
+
+    /// <summary>勾选的攻击生物名单，存 EntityType 名（如 "Zombie"），加密存储。</summary>
+    public List<string> AttackFilterMobs { get; set; } = [];
+
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.Now;
 
     public DateTimeOffset LastUsedAt { get; set; } = DateTimeOffset.Now;

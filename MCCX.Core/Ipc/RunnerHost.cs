@@ -17,6 +17,17 @@ public static class RunnerHost
     /// <summary>进程入口。返回值作为进程退出码。</summary>
     public static int Run(string? cmdHandle, string? evtHandle)
     {
+        int rc = RunCore(cmdHandle, evtHandle);
+
+        // MCC 会话会在前台线程上留尾巴（如连接超时检测线程：Thread.Sleep 15 秒醒一次才检查取消标记），
+        // 正常 return 会让 CLR 一直等这个前台线程结束，子进程迟迟不退、父进程白等 3 秒超时后才 Kill。
+        // 清理已全部完成，这里直接结束进程；Environment.Exit 仍会照常触发 ProcessExit 事件。
+        Environment.Exit(rc);
+        return rc; // 到不了这里
+    }
+
+    private static int RunCore(string? cmdHandle, string? evtHandle)
+    {
         if (string.IsNullOrEmpty(cmdHandle) || string.IsNullOrEmpty(evtHandle))
             return 2;
 
@@ -91,6 +102,7 @@ public static class RunnerHost
         }
 
         // 退出前断开连接；MCCSession.Dispose 内部会断开并回收 MCC 线程
+        live.Dispose();
         return 0;
     }
 
@@ -122,17 +134,32 @@ public static class RunnerHost
                     Range = message.Range,
                     CooldownMinMs = message.CooldownMinMs,
                     CooldownMaxMs = message.CooldownMaxMs,
+                    FilterMode = (MobFilterMode)Math.Clamp(message.FilterMode, 0, 2),
+                    Mobs = message.Mobs ?? [],
                 });
                 break;
 
             case RunnerMessage.CmdMouse:
                 session.ConfigureMouse(message.On, new MouseOptions
                 {
-                    Mode = (MouseMode)Math.Clamp(message.Mode, 0, 2),
-                    Side = (MouseSide)Math.Clamp(message.Side, 0, 1),
-                    HoldMs = message.HoldMs,
-                    IntervalMs = message.IntervalMs,
-                    JitterPercent = message.JitterPercent,
+                    Left = new MouseButtonOptions
+                    {
+                        Enabled = message.LeftOn,
+                        Mode = (MouseMode)Math.Clamp(message.LeftMode, 0, 2),
+                        HoldMs = message.LeftHoldMs,
+                        IntervalMs = message.LeftIntervalMs,
+                        JitterPercent = message.LeftJitterPercent,
+                    },
+                    Right = new MouseButtonOptions
+                    {
+                        Enabled = message.RightOn,
+                        Mode = (MouseMode)Math.Clamp(message.RightMode, 0, 2),
+                        HoldMs = message.RightHoldMs,
+                        IntervalMs = message.RightIntervalMs,
+                        JitterPercent = message.RightJitterPercent,
+                    },
+                    // 探测距离（1-7 格）：<=0 视为没带字段，回默认 5
+                    AimReach = message.Reach > 0 ? Math.Clamp(message.Reach, 1, 7) : 5.0,
                 });
                 break;
 

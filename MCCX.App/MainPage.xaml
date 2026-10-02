@@ -16,69 +16,126 @@
         <converters:BoolToVisibilityConverter x:Key="BoolToVisibility" />
     </Page.Resources>
 
-    <Grid Padding="16,12">
+    <Grid Padding="12,12">
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="Auto" />
             <ColumnDefinition Width="*" />
         </Grid.ColumnDefinitions>
 
-        <!-- 左侧：多开账号列表（需求 3.1 持久化 / 5. 多账号导航） -->
-        <Grid Grid.Column="0"
-              Width="250"
-              Margin="0,0,16,0"
-              RowSpacing="8">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="*" />
-                <RowDefinition Height="Auto" />
-            </Grid.RowDefinitions>
+        <!--
+            左侧：多开账号列表（需求 3.1 持久化 / 5. 多账号导航）。
+            整块加底色卡片，和右侧日志区在视觉上分开；底部不再放“删除”按钮，
+            删除改为账号项悬停后右侧出现的叉号 + 二次确认弹窗。
+        -->
+        <Border Grid.Column="0"
+                Width="220"
+                Margin="0,0,12,0"
+                Padding="8"
+                CornerRadius="8"
+                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1">
+            <Grid RowSpacing="8">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
 
-            <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="8">
-                <TextBlock Text="账号列表"
-                           FontWeight="SemiBold"
-                           VerticalAlignment="Center" />
-                <Button Content="添加账号"
-                        AutomationProperties.Name="添加账号"
-                        Command="{x:Bind ViewModel.AddAccountCommand}" />
-            </StackPanel>
+                <Grid Grid.Row="0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="账号列表"
+                               FontWeight="SemiBold"
+                               VerticalAlignment="Center" />
+                    <!-- 与标题同行、右对齐到账号卡片右边缘：不挤在标题后面，位置固定好找 -->
+                    <Button Grid.Column="1"
+                            Content="添加账号"
+                            AutomationProperties.Name="添加账号"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Center"
+                            Command="{x:Bind ViewModel.AddAccountCommand}" />
+                </Grid>
 
-            <ListView Grid.Row="1"
-                      x:Name="AccountList"
-                      ItemsSource="{x:Bind ViewModel.Accounts, Mode=OneWay}"
-                      SelectedItem="{x:Bind ViewModel.SelectedAccount, Mode=TwoWay}"
-                      SelectionMode="Single"
-                      ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                      ScrollViewer.HorizontalScrollMode="Disabled">
-                <ListView.ItemTemplate>
-                    <DataTemplate x:DataType="viewmodels:AccountViewModel">
-                        <StackPanel Spacing="2">
-                            <TextBlock Text="{x:Bind DisplayName, Mode=OneWay}"
-                                       FontWeight="SemiBold"
-                                       TextTrimming="CharacterEllipsis" />
-                            <TextBlock Text="{x:Bind ServerSummary, Mode=OneWay}"
-                                       FontSize="11"
-                                       TextTrimming="CharacterEllipsis"
-                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                            <TextBlock Text="{x:Bind StateText, Mode=OneWay}"
-                                       FontSize="11"
-                                       TextTrimming="CharacterEllipsis"
-                                       Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
-                        </StackPanel>
-                    </DataTemplate>
-                </ListView.ItemTemplate>
-            </ListView>
+                <ListView Grid.Row="1"
+                          x:Name="AccountList"
+                          ItemsSource="{x:Bind ViewModel.Accounts, Mode=OneWay}"
+                          SelectedItem="{x:Bind ViewModel.SelectedAccount, Mode=TwoWay}"
+                          SelectionMode="Single"
+                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                          ScrollViewer.HorizontalScrollMode="Disabled">
+                    <ListView.ItemContainerStyle>
+                        <Style TargetType="ListViewItem">
+                            <!-- 内容拉满整行，右侧的状态/叉号才能贴到卡片右边缘 -->
+                            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                            <Setter Property="Padding" Value="6,4" />
+                        </Style>
+                    </ListView.ItemContainerStyle>
+                    <ListView.ItemTemplate>
+                        <DataTemplate x:DataType="viewmodels:AccountViewModel">
+                            <!-- 悬停时淡入右侧叉号（直接改 Opacity，不改变高度，避免列表项抖动）。
+                                 Background 必须给 Transparent：没背景的 Grid 空白处不可命中，
+                                 指针落在行内空白区就收不到 PointerEntered，叉号会不亮。 -->
+                            <Grid ColumnSpacing="6"
+                                  Background="Transparent"
+                                  PointerEntered="AccountItem_PointerEntered"
+                                  PointerExited="AccountItem_PointerExited">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
 
-            <Button Grid.Row="2"
-                    HorizontalAlignment="Left"
-                    Content="删除"
-                    Command="{x:Bind ViewModel.DeleteAccountCommand}" />
-        </Grid>
+                                <TextBlock Grid.Row="0" Grid.Column="0"
+                                           Text="{x:Bind DisplayName, Mode=OneWay}"
+                                           FontWeight="SemiBold"
+                                           TextTrimming="CharacterEllipsis" />
+                                <!-- 连接状态：从项底移到右侧，只留状态词（地址右侧面板状态条里有） -->
+                                <TextBlock Grid.Row="0" Grid.Column="1"
+                                           Text="{x:Bind StateBadge, Mode=OneWay}"
+                                           FontSize="11"
+                                           VerticalAlignment="Center"
+                                           TextTrimming="CharacterEllipsis"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+
+                                <TextBlock Grid.Row="1" Grid.Column="0"
+                                           Text="{x:Bind ServerSummary, Mode=OneWay}"
+                                           FontSize="11"
+                                           TextTrimming="CharacterEllipsis"
+                                           Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                                <Button Grid.Row="1" Grid.Column="1"
+                                        x:Name="AccountDeleteButton"
+                                        AutomationProperties.Name="删除账号"
+                                        ToolTipService.ToolTip="删除该账号"
+                                        Content="✕"
+                                        FontSize="11"
+                                        MinWidth="0"
+                                        Padding="6,2"
+                                        Opacity="0"
+                                        VerticalAlignment="Center"
+                                        Click="AccountDelete_Click" />
+                            </Grid>
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
+            </Grid>
+        </Border>
 
         <!-- 右侧：选中账号的窗口（连接面板 + 自动化控制 + 日志控制台）；无账号时整体隐藏 -->
         <Grid Grid.Column="1"
               RowSpacing="10"
               Visibility="{x:Bind ViewModel.HasSelection, Mode=OneWay, Converter={StaticResource BoolToVisibility}}">
+            <Grid.ColumnDefinitions>
+                <!-- 就一列：连接状态在功能卡片下方单独占一行（贴右），右边不再单开状态列 -->
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
             <Grid.RowDefinitions>
+                <!-- 0 参数行 / 1 功能区卡片 / 2 连接状态行 / 3 日志 / 4 命令栏 -->
+                <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
@@ -86,76 +143,89 @@
             </Grid.RowDefinitions>
 
             <!--
-                连接参数栏。
-                状态文字必须独占一行：否则它的宽度会参与“服务器”所在 Auto 列的列宽计算，
-                连上服务器后状态变长（“已连接 host:port”）会把服务器框挤窄、后面所有控件位移。
+                连接参数栏：一行放齐 服务器 / 端口 / 用户名 / 版本 + 连接、断开，标签后面都带冒号。
+                服务器给 6* 弹性（下限 160），端口列 92：5 位端口 + 右侧清除按钮（×）才不会把数字盖掉。
+                列间距收到 6：标签加冒号要多占一截宽度，从间距里省出来，输入框和按钮一个都不缩小。
+                连接状态不占这一块：它在功能卡片下方单独一行、靠右显示。
             -->
-            <Grid Grid.Row="0" RowSpacing="6">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
-                </Grid.RowDefinitions>
+            <Grid x:Name="ParamsGrid" Grid.Row="0" ColumnSpacing="6">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="6*" MinWidth="160" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="92" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="2*" MinWidth="100" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="110" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
 
-                <Grid x:Name="ParamsGrid" Grid.Row="0" ColumnSpacing="8">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="2*" />
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="86" />
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="1.6*" />
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="1.6*" />
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="Auto" />
-                    </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="服务器：" VerticalAlignment="Center" />
+                <TextBox Grid.Column="1"
+                         x:Name="ServerBox"
+                         IsSpellCheckEnabled="False"
+                         IsTextPredictionEnabled="False"
+                         Text="{x:Bind ViewModel.ServerHost, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                         PlaceholderText="域名或IP地址" />
 
-                    <TextBlock Grid.Column="0" Text="服务器" VerticalAlignment="Center" />
-                    <TextBox Grid.Column="1"
-                             x:Name="ServerBox"
-                             IsSpellCheckEnabled="False"
-                             IsTextPredictionEnabled="False"
-                             Text="{x:Bind ViewModel.ServerHost, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                             MinWidth="140"
-                             PlaceholderText="地址或域名" />
+                <TextBlock Grid.Column="2" Text="端口：" VerticalAlignment="Center" />
+                <TextBox Grid.Column="3"
+                         x:Name="PortBox"
+                         IsSpellCheckEnabled="False"
+                         IsTextPredictionEnabled="False"
+                         Text="{x:Bind ViewModel.ServerPort, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                         PlaceholderText="25565" />
 
-                    <TextBlock Grid.Column="2" Text="端口" VerticalAlignment="Center" />
-                    <TextBox Grid.Column="3"
-                             x:Name="PortBox"
-                             IsSpellCheckEnabled="False"
-                             IsTextPredictionEnabled="False"
-                             Text="{x:Bind ViewModel.ServerPort, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                             PlaceholderText="25565" />
+                <TextBlock Grid.Column="4" Text="用户名：" VerticalAlignment="Center" />
+                <TextBox Grid.Column="5"
+                         x:Name="UserBox"
+                         IsSpellCheckEnabled="False"
+                         IsTextPredictionEnabled="False"
+                         Text="{x:Bind ViewModel.Username, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                         PlaceholderText="离线玩家名" />
 
-                    <TextBlock Grid.Column="4" Text="用户名" VerticalAlignment="Center" />
-                    <TextBox Grid.Column="5"
-                             x:Name="UserBox"
-                             IsSpellCheckEnabled="False"
-                             IsTextPredictionEnabled="False"
-                             Text="{x:Bind ViewModel.Username, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                             PlaceholderText="离线玩家名" />
+                <TextBlock Grid.Column="6" Text="版本：" VerticalAlignment="Center" />
+                <!-- 版本：默认 auto，下拉可选常见版本，也能直接手输任意版本号 -->
+                <ComboBox Grid.Column="7"
+                          x:Name="VersionBox"
+                          IsEditable="True"
+                          AutomationProperties.Name="版本"
+                          PlaceholderText="auto"
+                          ToolTipService.ToolTip="auto = 自动探测；也可下拉选或直接输入版本号"
+                          Text="{x:Bind ViewModel.MinecraftVersion, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
+                    <ComboBoxItem Content="auto" />
+                    <ComboBoxItem Content="26.2" />
+                    <ComboBoxItem Content="26.1" />
+                    <ComboBoxItem Content="1.21.11" />
+                    <ComboBoxItem Content="1.21.9" />
+                    <ComboBoxItem Content="1.21.8" />
+                    <ComboBoxItem Content="1.21.6" />
+                    <ComboBoxItem Content="1.21.4" />
+                    <ComboBoxItem Content="1.21.1" />
+                    <ComboBoxItem Content="1.20.6" />
+                    <ComboBoxItem Content="1.20.4" />
+                    <ComboBoxItem Content="1.20.1" />
+                    <ComboBoxItem Content="1.19.4" />
+                    <ComboBoxItem Content="1.18.2" />
+                    <ComboBoxItem Content="1.17.1" />
+                    <ComboBoxItem Content="1.16.5" />
+                    <ComboBoxItem Content="1.15.2" />
+                    <ComboBoxItem Content="1.14.4" />
+                    <ComboBoxItem Content="1.13.2" />
+                    <ComboBoxItem Content="1.12.2" />
+                    <ComboBoxItem Content="1.9.4" />
+                    <ComboBoxItem Content="1.8.9" />
+                    <ComboBoxItem Content="1.7.10" />
+                </ComboBox>
 
-                    <TextBlock Grid.Column="6" Text="版本" VerticalAlignment="Center" />
-                    <TextBox Grid.Column="7"
-                             x:Name="VersionBox"
-                             IsSpellCheckEnabled="False"
-                             IsTextPredictionEnabled="False"
-                             Text="{x:Bind ViewModel.MinecraftVersion, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                             PlaceholderText="auto" />
-
-                    <Button Grid.Column="8"
-                            Content="连接"
+                <!-- 连接/断开 收在行末：整组连接参数一行看完 -->
+                <StackPanel Grid.Column="8" Orientation="Horizontal" Spacing="8">
+                    <Button Content="连接"
                             Command="{x:Bind ViewModel.ConnectCommand}" />
-                    <Button Grid.Column="9"
-                            Content="断开"
+                    <Button Content="断开"
                             Command="{x:Bind ViewModel.DisconnectCommand}" />
-                </Grid>
-
-                <TextBlock x:Name="StateTextBlock"
-                           Grid.Row="1"
-                           Text="{x:Bind ViewModel.StateText, Mode=OneWay}"
-                           VerticalAlignment="Center"
-                           FontWeight="SemiBold" />
+                </StackPanel>
             </Grid>
 
             <!-- 自动化控制（需求 3.2）：砍怪 / 鼠标按键 / 钓鱼 / 自动重连 -->
@@ -177,24 +247,29 @@
                               VerticalScrollBarVisibility="Disabled">
                     <StackPanel x:Name="AutomationRow" Orientation="Horizontal" Spacing="14">
 
-                    <!-- 自动砍怪 -->
+                    <!--
+                        自动砍怪：标签本身就是下拉按钮——点“自动砍怪”文字即展开参数，
+                        DropDownButton 模板自带右侧下拉箭头，悬停时按钮底色变化提示可点开。
+                    -->
                     <StackPanel Orientation="Horizontal" Spacing="4">
-                        <TextBlock Text="自动砍怪" VerticalAlignment="Center" />
-                        <ToggleSwitch AutomationProperties.Name="自动砍怪"
-                                      MinWidth="0"
-                                      IsOn="{x:Bind ViewModel.AttackEnabled, Mode=TwoWay}" />
-                        <DropDownButton AutomationProperties.Name="自动砍怪选项"
-                                        ToolTipService.ToolTip="砍怪参数">
-                            <!-- DropDownButton 模板本身自带箭头，这里不再重复放 FontIcon -->
+                        <!-- x:Name：点“生物过滤”开弹窗前要先收起这层参数弹层 -->
+                        <DropDownButton x:Name="AttackOptionsButton"
+                                        AutomationProperties.Name="自动砍怪选项"
+                                        ToolTipService.ToolTip="砍怪参数"
+                                        Padding="8,2"
+                                        MinWidth="0"
+                                        PointerEntered="LabelButton_PointerEntered"
+                                        PointerExited="LabelButton_PointerExited">
+                            <TextBlock Text="自动砍怪" VerticalAlignment="Center" />
                             <DropDownButton.Flyout>
-                                <Flyout Opened="OnFlyoutOpened">
-                                    <StackPanel Spacing="8" Width="250">
+                                <Flyout Placement="Bottom" Opened="OnFlyoutOpened">
+                                    <StackPanel Spacing="8" Width="312">
                                         <Grid ColumnSpacing="8">
                                             <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="64" />
+                                                <ColumnDefinition Width="76" />
                                                 <ColumnDefinition Width="*" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock Text="距离" VerticalAlignment="Center" />
+                                            <TextBlock Text="距离：" VerticalAlignment="Center" />
                                             <TextBox Grid.Column="1"
                                                      AutomationProperties.Name="攻击距离"
                                                      IsSpellCheckEnabled="False"
@@ -203,10 +278,10 @@
                                         </Grid>
                                         <Grid ColumnSpacing="8">
                                             <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="64" />
+                                                <ColumnDefinition Width="76" />
                                                 <ColumnDefinition Width="*" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock Text="冷却下限" VerticalAlignment="Center" />
+                                            <TextBlock Text="冷却下限：" VerticalAlignment="Center" />
                                             <TextBox Grid.Column="1"
                                                      AutomationProperties.Name="冷却下限"
                                                      IsSpellCheckEnabled="False"
@@ -215,10 +290,10 @@
                                         </Grid>
                                         <Grid ColumnSpacing="8">
                                             <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="64" />
+                                                <ColumnDefinition Width="76" />
                                                 <ColumnDefinition Width="*" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock Text="冷却上限" VerticalAlignment="Center" />
+                                            <TextBlock Text="冷却上限：" VerticalAlignment="Center" />
                                             <TextBox Grid.Column="1"
                                                      AutomationProperties.Name="冷却上限"
                                                      IsSpellCheckEnabled="False"
@@ -229,91 +304,226 @@
                                                    FontSize="12"
                                                    Opacity="0.7"
                                                    TextWrapping="Wrap" />
+
+                                        <!--
+                                            生物过滤：改成和“添加账号”一样的模态弹窗。
+                                            91 项列表塞进弹层/下拉都会被窗口底边裁掉，弹窗里能滚、还能按分类收起。
+                                        -->
+                                        <Button AutomationProperties.Name="生物过滤"
+                                                ToolTipService.ToolTip="攻击生物过滤（白名单/黑名单）"
+                                                HorizontalAlignment="Stretch"
+                                                Padding="8,6"
+                                                Click="OpenMobFilter_Click"
+                                                PointerEntered="LabelButton_PointerEntered"
+                                                PointerExited="LabelButton_PointerExited">
+                                            <TextBlock Text="生物过滤" VerticalAlignment="Center" />
+                                        </Button>
                                     </StackPanel>
                                 </Flyout>
                             </DropDownButton.Flyout>
                         </DropDownButton>
+
+                        <ToggleSwitch AutomationProperties.Name="自动砍怪"
+                                      MinWidth="0"
+                                      IsOn="{x:Bind ViewModel.AttackEnabled, Mode=TwoWay}" />
                     </StackPanel>
 
-                    <!-- 鼠标按键控制 -->
+                    <!-- 鼠标按键控制：同样点“鼠标控制”文字展开参数 -->
                     <StackPanel Orientation="Horizontal" Spacing="4">
-                        <TextBlock Text="鼠标控制" VerticalAlignment="Center" />
-                        <ToggleSwitch AutomationProperties.Name="鼠标控制"
-                                      MinWidth="0"
-                                      IsOn="{x:Bind ViewModel.MouseEnabled, Mode=TwoWay}" />
                         <DropDownButton AutomationProperties.Name="鼠标控制选项"
-                                        ToolTipService.ToolTip="鼠标参数">
-                            <!-- DropDownButton 模板本身自带箭头，这里不再重复放 FontIcon -->
+                                        ToolTipService.ToolTip="鼠标参数"
+                                        Padding="8,2"
+                                        MinWidth="0"
+                                        PointerEntered="LabelButton_PointerEntered"
+                                        PointerExited="LabelButton_PointerExited">
+                            <TextBlock Text="鼠标控制" VerticalAlignment="Center" />
                             <DropDownButton.Flyout>
-                                <Flyout Opened="OnFlyoutOpened">
-                                    <StackPanel Spacing="8" Width="250">
+                                <Flyout Placement="Bottom" Opened="OnFlyoutOpened">
+                                    <!-- 弹层总高必须 ≤ 按钮底到窗口底的余量（约 468 DIP），
+                                         否则 WinUI 会把弹层顶边钉到窗口顶（向上翻）。
+                                         加了“距离”行后靠 行距 8→4 + 垂直内边距压缩回来。 -->
+                                    <Flyout.FlyoutPresenterStyle>
+                                        <Style TargetType="FlyoutPresenter">
+                                            <Setter Property="Padding" Value="16,4" />
+                                        </Style>
+                                    </Flyout.FlyoutPresenterStyle>
+                                    <StackPanel Spacing="4" Width="312">
+                                        <!--
+                                            左键、右键两组独立参数（需求 3.2）：状态互不干扰，
+                                            两边都能单独启用、可以同时触发；参数也各用各的。
+                                            组标题行右侧直接放启用开关（省一行高度，弹层不用高到翻上去）。
+                                            可见标签重复（两个“模式：”），AutomationProperties.Name 区分左右供测试定位。
+                                            顶部“距离”滑动条 = 准星探测距离，左右键共用（1-7 格，默认 5）。
+                                            按住/间隔两行按模式显隐——不生效的参数就藏起来（需求）：
+                                            长按 = 全藏（一直按着，两个都用不上）；
+                                            间隔点击 = 只显示间隔（按住时长是间隔长按的参数，藏）；
+                                            间隔长按 = 按住 + 间隔都显示。
+                                        -->
                                         <Grid ColumnSpacing="8">
                                             <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="64" />
+                                                <ColumnDefinition Width="76" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="距离：" VerticalAlignment="Center" />
+                                            <Slider Grid.Column="1"
+                                                    AutomationProperties.Name="鼠标距离"
+                                                    Minimum="1"
+                                                    Maximum="7"
+                                                    TickFrequency="1"
+                                                    SmallChange="1"
+                                                    LargeChange="1"
+                                                    VerticalAlignment="Center"
+                                                    Value="{x:Bind ViewModel.MouseAimReach, Mode=TwoWay}"
+                                                    ToolTipService.ToolTip="准星探测距离（格）：只作用于视线方向这个距离内的方块" />
+                                            <TextBlock Grid.Column="2"
+                                                       Text="{x:Bind ViewModel.MouseAimReachText, Mode=OneWay}"
+                                                       VerticalAlignment="Center" />
+                                        </Grid>
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="左键"
+                                                       FontWeight="SemiBold"
+                                                       VerticalAlignment="Center" />
+                                            <ToggleSwitch Grid.Column="1"
+                                                          AutomationProperties.Name="左键启用"
+                                                          MinWidth="0"
+                                                          IsOn="{x:Bind ViewModel.MouseLeftEnabled, Mode=TwoWay}" />
+                                        </Grid>
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="76" />
                                                 <ColumnDefinition Width="*" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock Text="模式" VerticalAlignment="Center" />
+                                            <TextBlock Text="模式：" VerticalAlignment="Center" />
                                             <ComboBox Grid.Column="1"
-                                                      AutomationProperties.Name="鼠标模式"
-                                                      SelectedIndex="{x:Bind ViewModel.MouseModeIndex, Mode=TwoWay}">
+                                                      AutomationProperties.Name="左键模式"
+                                                      SelectedIndex="{x:Bind ViewModel.MouseLeftModeIndex, Mode=TwoWay}">
                                                 <ComboBoxItem Content="长按" />
                                                 <ComboBoxItem Content="间隔点击" />
                                                 <ComboBoxItem Content="间隔长按" />
                                             </ComboBox>
                                         </Grid>
-                                        <Grid ColumnSpacing="8">
+                                        <Grid ColumnSpacing="8"
+                                              Visibility="{x:Bind ViewModel.MouseLeftHoldVisible, Mode=OneWay, Converter={StaticResource BoolToVisibility}}">
                                             <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="64" />
+                                                <ColumnDefinition Width="76" />
                                                 <ColumnDefinition Width="*" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock Text="按键" VerticalAlignment="Center" />
+                                            <TextBlock Text="按住 ms：" VerticalAlignment="Center" />
+                                            <TextBox Grid.Column="1"
+                                                     AutomationProperties.Name="左键按住"
+                                                     IsSpellCheckEnabled="False"
+                                                     IsTextPredictionEnabled="False"
+                                                     Text="{x:Bind ViewModel.MouseLeftHoldMs, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                        </Grid>
+                                        <Grid ColumnSpacing="8"
+                                              Visibility="{x:Bind ViewModel.MouseLeftTimingVisible, Mode=OneWay, Converter={StaticResource BoolToVisibility}}">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="76" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="间隔 ms：" VerticalAlignment="Center" />
+                                            <TextBox Grid.Column="1"
+                                                     AutomationProperties.Name="左键间隔"
+                                                     IsSpellCheckEnabled="False"
+                                                     IsTextPredictionEnabled="False"
+                                                     Text="{x:Bind ViewModel.MouseLeftIntervalMs, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                        </Grid>
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="76" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="抖动 %：" VerticalAlignment="Center" />
+                                            <TextBox Grid.Column="1"
+                                                     AutomationProperties.Name="左键抖动"
+                                                     IsSpellCheckEnabled="False"
+                                                     IsTextPredictionEnabled="False"
+                                                     Text="{x:Bind ViewModel.MouseLeftJitterPercent, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                        </Grid>
+
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="右键"
+                                                       FontWeight="SemiBold"
+                                                       VerticalAlignment="Center" />
+                                            <ToggleSwitch Grid.Column="1"
+                                                          AutomationProperties.Name="右键启用"
+                                                          MinWidth="0"
+                                                          IsOn="{x:Bind ViewModel.MouseRightEnabled, Mode=TwoWay}" />
+                                        </Grid>
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="76" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="模式：" VerticalAlignment="Center" />
                                             <ComboBox Grid.Column="1"
-                                                      AutomationProperties.Name="鼠标按键"
-                                                      SelectedIndex="{x:Bind ViewModel.MouseSideIndex, Mode=TwoWay}">
-                                                <ComboBoxItem Content="左键" />
-                                                <ComboBoxItem Content="右键" />
+                                                      AutomationProperties.Name="右键模式"
+                                                      SelectedIndex="{x:Bind ViewModel.MouseRightModeIndex, Mode=TwoWay}">
+                                                <ComboBoxItem Content="长按" />
+                                                <ComboBoxItem Content="间隔点击" />
+                                                <ComboBoxItem Content="间隔长按" />
                                             </ComboBox>
                                         </Grid>
-                                        <Grid ColumnSpacing="8">
+                                        <Grid ColumnSpacing="8"
+                                              Visibility="{x:Bind ViewModel.MouseRightHoldVisible, Mode=OneWay, Converter={StaticResource BoolToVisibility}}">
                                             <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="64" />
+                                                <ColumnDefinition Width="76" />
                                                 <ColumnDefinition Width="*" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock Text="按住 ms" VerticalAlignment="Center" />
+                                            <TextBlock Text="按住 ms：" VerticalAlignment="Center" />
                                             <TextBox Grid.Column="1"
-                                                     AutomationProperties.Name="按住毫秒"
+                                                     AutomationProperties.Name="右键按住"
                                                      IsSpellCheckEnabled="False"
                                                      IsTextPredictionEnabled="False"
-                                                     Text="{x:Bind ViewModel.MouseHoldMs, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                                     Text="{x:Bind ViewModel.MouseRightHoldMs, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                        </Grid>
+                                        <Grid ColumnSpacing="8"
+                                              Visibility="{x:Bind ViewModel.MouseRightTimingVisible, Mode=OneWay, Converter={StaticResource BoolToVisibility}}">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="76" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="间隔 ms：" VerticalAlignment="Center" />
+                                            <TextBox Grid.Column="1"
+                                                     AutomationProperties.Name="右键间隔"
+                                                     IsSpellCheckEnabled="False"
+                                                     IsTextPredictionEnabled="False"
+                                                     Text="{x:Bind ViewModel.MouseRightIntervalMs, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
                                         </Grid>
                                         <Grid ColumnSpacing="8">
                                             <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="64" />
+                                                <ColumnDefinition Width="76" />
                                                 <ColumnDefinition Width="*" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock Text="间隔 ms" VerticalAlignment="Center" />
+                                            <TextBlock Text="抖动 %：" VerticalAlignment="Center" />
                                             <TextBox Grid.Column="1"
-                                                     AutomationProperties.Name="间隔毫秒"
+                                                     AutomationProperties.Name="右键抖动"
                                                      IsSpellCheckEnabled="False"
                                                      IsTextPredictionEnabled="False"
-                                                     Text="{x:Bind ViewModel.MouseIntervalMs, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                                     Text="{x:Bind ViewModel.MouseRightJitterPercent, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
                                         </Grid>
-                                        <Grid ColumnSpacing="8">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="64" />
-                                                <ColumnDefinition Width="*" />
-                                            </Grid.ColumnDefinitions>
-                                            <TextBlock Text="抖动 %" VerticalAlignment="Center" />
-                                            <TextBox Grid.Column="1"
-                                                     AutomationProperties.Name="抖动百分比"
-                                                     IsSpellCheckEnabled="False"
-                                                     IsTextPredictionEnabled="False"
-                                                     Text="{x:Bind ViewModel.MouseJitterPercent, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                        </Grid>
+
+                                        <TextBlock Text="左键与右键相互独立，可以同时开启。"
+                                                   FontSize="12"
+                                                   Opacity="0.7"
+                                                   TextWrapping="Wrap" />
                                     </StackPanel>
                                 </Flyout>
                             </DropDownButton.Flyout>
                         </DropDownButton>
+
+                        <ToggleSwitch AutomationProperties.Name="鼠标控制"
+                                      MinWidth="0"
+                                      IsOn="{x:Bind ViewModel.MouseEnabled, Mode=TwoWay}" />
                     </StackPanel>
 
                     <!-- 自动钓鱼（无参数，不放下拉按钮） -->
@@ -324,24 +534,25 @@
                                       IsOn="{x:Bind ViewModel.FishingEnabled, Mode=TwoWay}" />
                     </StackPanel>
 
-                    <!-- 自动重连 -->
+                    <!-- 自动重连：同样点“自动重连”文字展开参数 -->
                     <StackPanel Orientation="Horizontal" Spacing="4">
-                        <TextBlock Text="自动重连" VerticalAlignment="Center" />
-                        <ToggleSwitch AutomationProperties.Name="自动重连"
-                                      MinWidth="0"
-                                      IsOn="{x:Bind ViewModel.ReconnectEnabled, Mode=TwoWay}" />
                         <DropDownButton AutomationProperties.Name="自动重连选项"
-                                        ToolTipService.ToolTip="重连参数">
-                            <!-- DropDownButton 模板本身自带箭头，这里不再重复放 FontIcon -->
+                                        ToolTipService.ToolTip="重连参数"
+                                        Padding="8,2"
+                                        MinWidth="0"
+                                        PointerEntered="LabelButton_PointerEntered"
+                                        PointerExited="LabelButton_PointerExited">
+                            <TextBlock Text="自动重连" VerticalAlignment="Center" />
                             <DropDownButton.Flyout>
-                                <Flyout Opened="OnFlyoutOpened">
-                                    <StackPanel Spacing="8" Width="250">
+                                <Flyout Placement="Bottom" Opened="OnFlyoutOpened">
+                                    <!-- 宽度与砍怪/鼠标弹层统一为 312，避免三个下拉宽窄不一看着乱 -->
+                                    <StackPanel Spacing="8" Width="312">
                                         <Grid ColumnSpacing="8">
                                             <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="64" />
+                                                <ColumnDefinition Width="76" />
                                                 <ColumnDefinition Width="*" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock Text="次数" VerticalAlignment="Center" />
+                                            <TextBlock Text="次数：" VerticalAlignment="Center" />
                                             <TextBox Grid.Column="1"
                                                      AutomationProperties.Name="重连次数"
                                                      IsSpellCheckEnabled="False"
@@ -350,10 +561,10 @@
                                         </Grid>
                                         <Grid ColumnSpacing="8">
                                             <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="64" />
+                                                <ColumnDefinition Width="76" />
                                                 <ColumnDefinition Width="*" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock Text="间隔 ms" VerticalAlignment="Center" />
+                                            <TextBlock Text="间隔 ms：" VerticalAlignment="Center" />
                                             <TextBox Grid.Column="1"
                                                      AutomationProperties.Name="重连间隔"
                                                      IsSpellCheckEnabled="False"
@@ -368,14 +579,31 @@
                                 </Flyout>
                             </DropDownButton.Flyout>
                         </DropDownButton>
+
+                        <ToggleSwitch AutomationProperties.Name="自动重连"
+                                      MinWidth="0"
+                                      IsOn="{x:Bind ViewModel.ReconnectEnabled, Mode=TwoWay}" />
                     </StackPanel>
 
                     </StackPanel>
                 </ScrollViewer>
             </Border>
 
+            <!--
+                连接状态：功能卡片下方单独一行、靠右（卡片与日志之间）。
+                不进卡片——不压开关、不挤功能区；也不盖日志——自己占一行，日志从它下面开始。
+                右沿与卡片右沿同为面板右缘；文案过长只用省略号截自己。
+            -->
+            <TextBlock x:Name="StateTextBlock"
+                       Grid.Row="2"
+                       HorizontalAlignment="Right"
+                       VerticalAlignment="Center"
+                       FontWeight="SemiBold"
+                       Text="{x:Bind ViewModel.StateText, Mode=OneWay}"
+                       TextTrimming="CharacterEllipsis" />
+
             <!-- 日志 -->
-            <ListView Grid.Row="2"
+            <ListView Grid.Row="3"
                       x:Name="LogList"
                       ItemsSource="{x:Bind ViewModel.Logs, Mode=OneWay}"
                       SelectionMode="None"
@@ -386,7 +614,8 @@
                       ScrollViewer.VerticalScrollMode="Auto">
                 <ListView.ItemTemplate>
                     <DataTemplate x:DataType="viewmodels:LogEntry">
-                        <TextBlock Text="{x:Bind Text}"
+                        <!-- OneWay：连续重复日志合并时 Text 会就地变成“原文 xN”，要跟着刷新 -->
+                        <TextBlock Text="{x:Bind Text, Mode=OneWay}"
                                    TextWrapping="Wrap"
                                    FontFamily="Consolas"
                                    FontSize="12" />
@@ -395,7 +624,7 @@
             </ListView>
 
             <!-- 命令栏 -->
-            <Grid Grid.Row="3" ColumnSpacing="8">
+            <Grid Grid.Row="4" ColumnSpacing="8">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
