@@ -82,19 +82,69 @@ public sealed record MouseOptions
     public double AimReach { get; init; } = 5.0;
 }
 
-/// <summary>断线自动重连参数（需求 3.2）。延迟按 DelayMs ± JitterPercent 抖动。</summary>
+/// <summary>
+/// 视角移动的目标方向（用户 2026-10-03 需求：点一下立刻转向，一次性生效）。
+/// <para>
+/// Minecraft 的 yaw 约定：<c>0=南、90=西、180=北、270=东</c>；
+/// pitch 是俯仰角：<c>-90=正上方、0=平视、90=正下方</c>。
+/// <see cref="Up"/>/<see cref="Down"/> 只改俯仰、保留当前朝向（抬头看天 / 低头看地）。
+/// </para>
+/// </summary>
+public enum MccLookDirection
+{
+    East = 0,
+    South = 1,
+    West = 2,
+    North = 3,
+    Up = 4,
+    Down = 5,
+}
+
+/// <summary>
+/// 断线自动重连参数（需求 3.2）。延迟按 DelayMs ± JitterPercent 抖动。
+/// <para>
+/// <see cref="MaxAttempts"/> = <b>0 表示无限重连</b>，也是默认值
+/// （2026-10-03 用户要求：加入无限次重连选项并把无限设为默认）。只由三种情况终止：
+/// 自动重连开关被关闭、用户点"断开"、程序退出。
+/// </para>
+/// </summary>
 public sealed record ReconnectOptions
 {
     public bool Enabled { get; init; } = true;
 
-    /// <summary>连续失败的最大重连次数。</summary>
-    public int MaxAttempts { get; init; } = 5;
+    /// <summary>连续失败的最大重连次数；0 = 无限重连（默认）。</summary>
+    public int MaxAttempts { get; init; }
 
     /// <summary>每次重连前的等待时长（毫秒）。</summary>
     public int DelayMs { get; init; } = 3000;
 
     /// <summary>随机抖动比例（0-90，百分比）。</summary>
     public int JitterPercent { get; init; } = 30;
+}
+
+/// <summary>
+/// 自动钓鱼参数（用户 2026-10-04 需求：钓鱼下拉）。
+/// 字段与 MCC 内置 AutoFishing 的同名配置一一对应，<b>默认值 = MCC 配置默认值</b>。
+/// <para>
+/// 收杆（咬钩）检测在 MCC 里共三条路径：浮漂实体<b>移动位移</b>检测
+/// （Stationary_Threshold / Hook_Threshold，<b>没有开关、始终启用</b>）、
+/// 浮漂实体<b>速度包</b>检测（<see cref="VelocityDetection"/>）、
+/// <b>水花声音</b>检测（<see cref="SoundDetection"/>）。
+/// </para>
+/// </summary>
+public sealed record FishingOptions
+{
+    /// <summary>收杆检测·水花声音（MCC <c>Enable_Sound_Detection</c>，默认开）。</summary>
+    public bool SoundDetection { get; init; } = true;
+
+    /// <summary>收杆检测·浮漂实体速度包（MCC <c>Enable_Velocity_Detection</c>，默认开）。</summary>
+    public bool VelocityDetection { get; init; } = true;
+
+    /// <summary>抛竿超时（秒）：多久没咬钩算超时、超时后重新抛竿（MCC <c>Fishing_Timeout</c>，默认 300）。</summary>
+    public double TimeoutSeconds { get; init; } = 300.0;
+
+    /// <summary>重抛间隔（秒）：收杆后 / 超时后隔多久重新抛竿（MCC <c>Cast_Delay</c>，默认 0.4）。</summary>
+    public double CastDelaySeconds { get; init; } = 0.4;
 }
 
 /// <summary>时间抖动工具：把固定毫秒数变成 ±percent% 的随机值。</summary>

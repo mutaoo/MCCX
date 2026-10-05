@@ -1,7 +1,8 @@
-using System.Reflection;
 using System.Runtime.InteropServices;
 using MCCX.Core;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using Windows.Graphics;
 
 // To learn more about WinUI, the WinUI project structure,
@@ -47,19 +48,104 @@ public sealed partial class MainWindow : Window
         return screenWidth > 0 ? Math.Min(wantedPx, screenWidth - 8) : wantedPx;
     }
 
+    #region 主题（暗色模式：黑底白字，2026-10-03 用户要求）
+
+    /// <summary>当前窗口实例：界面层切主题要拿到窗口（本程序只有这一个窗）。</summary>
+    internal static MainWindow? Instance { get; private set; }
+
+    /// <summary>
+    /// 暗色模式的底色：#121212（2026-10-05 用户指定，不再用纯黑）。
+    /// 整窗、标题栏、卡片底一律用它，暗色下不会出现"黑底 + 纯黑卡片"分不出层次的情况。
+    /// </summary>
+    private static readonly Windows.UI.Color DarkBackgroundColor = Windows.UI.Color.FromArgb(0xFF, 0x12, 0x12, 0x12);
+
+    private static readonly Brush DarkWindowBrush = new SolidColorBrush(DarkBackgroundColor);
+
+    /// <summary>启动时读上次的选择：默认浅色（保持既有外观）。</summary>
+    private static bool ReadStoredTheme() => UiSettingsStore.ReadDarkMode();
+
+    /// <summary>应用主题（不动设置文件，启动时用）。</summary>
+    private void ApplyThemeCore(bool darkMode)
+    {
+        ElementTheme theme = darkMode ? ElementTheme.Dark : ElementTheme.Light;
+
+        // 主题打在窗口根元素上：整棵可见内容树（含标题栏）跟着变。
+        // 背景：浅色留空 = 让 Mica 底透出来，和以前一模一样；暗色盖一层纯黑，
+        // 标题栏与内容区一起黑，不依赖系统是不是深色
+        // （Background 只有 Panel/Control/Border 上有，本窗内容是 XAML 里那层 Grid）。
+        //
+        // 弹层不会自动跟着走：Flyout / ComboBox 下拉会跟（WinAppSDK 2.3 实测），
+        // ContentDialog **不会**，要弹之前手动抄主题 + 改它背后的烟雾层
+        // —— 见 MainPage.SyncDialogTheme 与文档 §9"WinUI 主题三坑"。
+        //
+        // 注意：**不要改 Application.Current.RequestedTheme** —— WinUI 3 在启动后设它
+        // 会直接抛 COMException 0x80131515（实测，见 %TEMP%\mccx-unhandled.log），
+        // 异常走 UnhandledException 会把进程打死、连窗口都不出，只能用元素主题。
+        if (Content is Panel root)
+        {
+            root.RequestedTheme = theme;
+            root.Background = darkMode ? DarkWindowBrush : null;
+        }
+
+        ApplyCaptionButtonColors(darkMode);
+    }
+
+    /// <summary>
+    /// 系统标题栏按钮（最小化/最大化/关闭）的配色。
+    /// <c>ExtendsContentIntoTitleBar=true</c> 时这三个按钮仍由系统绘制，默认跟着**系统**主题走，
+    /// 于是暗色模式下窗口右上角会留三块浅色方块（2026-10-05 用户反馈）。
+    /// 这里在暗色时把它们染成与内容区一致的 #121212 + 白字，浅色时清空交回系统（保持原生观感）。
+    /// </summary>
+    private void ApplyCaptionButtonColors(bool darkMode)
+    {
+        try
+        {
+            var titleBar = AppWindow.TitleBar;
+            if (!darkMode)
+            {
+                titleBar.ButtonBackgroundColor = null;
+                titleBar.ButtonInactiveBackgroundColor = null;
+                titleBar.ButtonForegroundColor = null;
+                titleBar.ButtonInactiveForegroundColor = null;
+                titleBar.ButtonHoverBackgroundColor = null;
+                titleBar.ButtonPressedBackgroundColor = null;
+                return;
+            }
+
+            titleBar.ButtonBackgroundColor = DarkBackgroundColor;
+            titleBar.ButtonInactiveBackgroundColor = DarkBackgroundColor;
+            titleBar.ButtonForegroundColor = Microsoft.UI.Colors.White;
+            titleBar.ButtonInactiveForegroundColor = Microsoft.UI.Colors.White;
+            // 悬停/按下给两级浅一档的深灰：纯 #121212 上看不出按钮可点
+            titleBar.ButtonHoverBackgroundColor = Windows.UI.Color.FromArgb(0xFF, 0x23, 0x23, 0x23);
+            titleBar.ButtonPressedBackgroundColor = Windows.UI.Color.FromArgb(0xFF, 0x2E, 0x2E, 0x2E);
+        }
+        catch (Exception)
+        {
+            // 取不到标题栏（极早期构造或非桌面会话）不影响主流程：顶多按钮仍是系统色
+        }
+    }
+
+    /// <summary>界面切主题：应用 + 记住（下次启动保持）。</summary>
+    public void ApplyTheme(bool darkMode)
+    {
+        ApplyThemeCore(darkMode);
+        UiSettingsStore.WriteDarkMode(darkMode);
+    }
+
+    #endregion
+
     public MainWindow()
     {
         InitializeComponent();
+        Instance = this;
 
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);
 
-        // 标题栏副标题显示版本号，取 csproj 的 InformationalVersion（单一来源）；
-        // SourceLink 可能给它追加 +提交哈希，展示时去掉
-        string version = typeof(MainWindow).Assembly
-            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? string.Empty;
-        int plus = version.IndexOf('+');
-        AppTitleBar.Subtitle = plus >= 0 ? version[..plus] : version;
+        // 先落主题再导航：否则页面先按浅色画出来再翻黑，会闪一下。
+        // 放在 SetTitleBar 之后，是因为暗色还要顺带把系统标题栏按钮染色（ApplyCaptionButtonColors）。
+        ApplyThemeCore(ReadStoredTheme());
 
         // unpackaged 应用必须给绝对路径，相对路径按进程工作目录解析，启动方式不同就会失效
         string iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", "AppIcon.ico");

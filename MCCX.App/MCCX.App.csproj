@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
@@ -7,14 +7,14 @@
     <!-- 程序名就是 MCCX：exe、进程名、窗口标题都不带前后缀（MCCX.App 只是工程目录名） -->
     <AssemblyName>MCCX</AssemblyName>
     <!--
-      版本号（首版 1.0.1.261002_beta）：
-      - InformationalVersion = 完整版本号，exe 属性「产品版本」与界面标题栏副标题同源显示；
-      - 文件/程序集版本只取纯数字段 1.0.1（第 4 段 261002 是日期 yymmdd，超出 16 位上限，
-        进不了 AssemblyVersion/FileVersion；_beta 含下划线也进不了数值版本）。
-      升版本时只改 InformationalVersion 即可，界面与产品版本自动跟随。
+      版本号（当前 1.0.1.beta.2）：
+      - InformationalVersion = 完整版本号，只在 exe 属性「产品版本」里体现，
+        界面与 README 均不显示版本号（用户要求，主页保持纯 MCCX 标题）；
+      - 文件/程序集版本只取纯数字段 1.0.1（预发布后缀含点与字母，进不了 AssemblyVersion/FileVersion）
+      升版本时只改 InformationalVersion 一处即可。
     -->
     <Version>1.0.1</Version>
-    <InformationalVersion>1.0.1.261002_beta</InformationalVersion>
+    <InformationalVersion>1.0.1.beta.2</InformationalVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon Condition="Exists('Assets\AppIcon.ico')">Assets\AppIcon.ico</ApplicationIcon>
@@ -77,10 +77,15 @@
     Set <EnableWinAppRunSupport>false</EnableWinAppRunSupport> in a
     <PropertyGroup> above to opt out.
   -->
+  <!--
+    版本固定，不用 "*"：浮动版本会让同一份源码在不同时间/不同机器上解析出不同的
+    WASDK 与 BuildTools（构建不可复现）。升级时只改这里，并用
+    dotnet list MCCX.App package (加 include-transitive) 复核完整解析结果。
+  -->
   <ItemGroup>
-    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="*" />
-    <PackageReference Include="Microsoft.WindowsAppSDK" Version="*" />
-    <PackageReference Include="Microsoft.Windows.SDK.BuildTools.WinApp" Version="*" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2705" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.5.1" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools.WinApp" Version="0.7.1" />
   </ItemGroup>
 
   <!--
@@ -92,11 +97,16 @@
     <HasPackageAndPublishMenu>true</HasPackageAndPublishMenu>
   </PropertyGroup>
 
-  <!-- Publish Properties -->
+  <!--
+    发布属性：
+    - PublishTrimmed 一律关闭（原来是 Release=True）。MCC 大量依赖反射：
+      Tomlet 配置反序列化、Translations 资源、Roslyn 内存编译脚本、反射式命令注册，
+      裁剪会静默剪坏这些功能（能启动、一连就错），这是踩过的坑。
+    - PublishReadyToRun 只影响启动速度，不做裁剪，Release 保持开启。
+  -->
   <PropertyGroup>
     <PublishReadyToRun Condition="'$(Configuration)' == 'Debug'">False</PublishReadyToRun>
     <PublishReadyToRun Condition="'$(Configuration)' != 'Debug'">True</PublishReadyToRun>
-    <PublishTrimmed Condition="'$(Configuration)' == 'Debug'">False</PublishTrimmed>
-    <PublishTrimmed Condition="'$(Configuration)' != 'Debug'">True</PublishTrimmed>
+    <PublishTrimmed>False</PublishTrimmed>
   </PropertyGroup>
 </Project>

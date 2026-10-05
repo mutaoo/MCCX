@@ -39,8 +39,9 @@ BundleArtifacts/
 *.appxupload
 
 # Publish output
+# 注意：不再忽略 *.pubxml —— 发布配置（win-x64/x86/arm64）是本仓库的正式交付配置，
+# 被忽略会导致"便携文件夹"的发布参数只存在于某一台机器上。
 publish/
-*.pubxml
 PublishScripts/
 
 # Code analysis and tooling
@@ -52,3 +53,6 @@ _ReSharper*/
 # Generated files
 Generated\ Files/
 *_wpftmp.csproj
+
+# 发布配置文件：只随本机，不进仓库（发布统一用开放文档 §12 的 dotnet publish 命令行，不依赖 pubxml）
+Properties/PublishProfiles/

@@ -1,5 +1,8 @@
+using System.Reflection;
+using MinecraftClient;
 using MinecraftClient.Inventory;
 using MinecraftClient.Mapping;
+using MinecraftClient.Protocol;
 using MinecraftClient.Scripting;
 
 namespace MCCX.Core;
@@ -29,8 +32,9 @@ namespace MCCX.Core;
 /// <item>左键 = 挖掘方块（StartDigging → 保持 → StopDigging），释放包由 MCC 的挖掘计时器自动补发；
 /// 空处点击 = 挥手（Animation）</item>
 /// <item>右键 = 视线指着方块时发 UseItemOn（开箱/按按钮/放方块），空处发 UseItem（使用手中物品），
-/// 每次点击都会挥手；按住期间每个 tick 重发，与原版按住右键一致；
-/// 协议里没有独立的“右键释放”包，停止发送即视为释放</item>
+/// 每次点击都会挥手；按住期间每个 tick 重发，与原版按住右键一致。手持弓/三叉戟这类
+/// “松开才结算”的物品时改为按下只发一次（重发会打断蓄力），松开时补发 Player Action
+/// status 5（RELEASE_USE_ITEM），否则服务端不结算蓄力，按住再松开箭也射不出去</item>
 /// </list>
 /// </summary>
 internal sealed class MouseControlBot : ChatBot
@@ -71,6 +75,12 @@ internal sealed class MouseControlBot : ChatBot
 
         /// <summary>最近一次点击走的路径（指向方块 / 空处），只用于日志。</summary>
         public string ClickPath = string.Empty;
+
+        /// <summary>
+        /// 右键是否“按着”蓄力类物品（弓/三叉戟）还没松开：松开时必须补发 RELEASE_USE_ITEM
+        /// （status 5）服务端才会发射/投掷。普通物品从不置位（食物靠按住满时自动完成，补发会打断）。
+        /// </summary>
+        public bool UsingCharge;
     }
 
     private readonly ButtonState _left = new() { Side = MouseSide.Left };
@@ -104,7 +114,10 @@ internal sealed class MouseControlBot : ChatBot
             if (old.Left.Mode != value.Left.Mode)
                 Reset(_left);
             if (old.Right.Mode != value.Right.Mode)
+            {
+                ReleaseRight(_right); // 还按着弓/三叉戟的话先补发释放包，再复位
                 Reset(_right);
+            }
         }
     }
 
@@ -140,12 +153,111 @@ internal sealed class MouseControlBot : ChatBot
         st.LastTrace = DateTime.MinValue;
         st.LastBreakTrace = DateTime.MinValue;
         st.ClickPath = string.Empty;
+        st.UsingCharge = false;
     }
 
     public override void AfterGameJoined()
     {
         // 服务器 Configuration 阶段结束、真正进入 Play 阶段后才允许发包
         _inGame = true;
+    }
+
+    public override void OnUnload()
+    {
+        // 卸载/断线前还按着弓/三叉戟：补发释放包，服务端别停在蓄力状态
+        ReleaseRight(_right);
+    }
+
+    /// <summary>
+    /// McClient 的私有协议 handler 字段：MCC 没有暴露“松开使用物品”（Player Action status 5 =
+    /// RELEASE_USE_ITEM）的公开 API（DigBlock 只发 0/1/2，DropSelectedItem 只发 3/4），
+    /// 只能反射它，按 DropSelectedItem 同款写法补发释放包。
+    /// </summary>
+    private static readonly FieldInfo? ReleaseHandlerField =
+        typeof(McClient).GetField("handler", BindingFlags.Instance | BindingFlags.NonPublic);
+
+    /// <summary>McClient 的私有 sequenceId 字段（方块同步序列号）：挖掘类数据包按 sequenceId++ 取值。</summary>
+    private static readonly FieldInfo? ReleaseSequenceField =
+        typeof(McClient).GetField("sequenceId", BindingFlags.Instance | BindingFlags.NonPublic);
+
+    private static bool _releaseApiMissingLogged;
+
+    /// <summary>
+    /// 手持的是否是“松开才结算”的蓄力类物品（弓、三叉戟）：这类物品必须在右键松开时补发
+    /// RELEASE_USE_ITEM，服务端才会发射/投掷；食物、药水靠按住满时自动完成，绝不能补发
+    /// （会把正在吃的东西打断）。
+    /// </summary>
+    private bool IsChargeItem()
+    {
+        try
+        {
+            // 玩家背包窗口 0：36-44 是快捷栏，当前手持 = 36 + 当前选中格
+            Container inv = GetPlayerInventory();
+            int slot = 36 + GetCurrentSlot();
+            return inv.Items.TryGetValue(slot, out Item? item)
+                && item is not null
+                && !item.IsEmpty
+                && item.Type is ItemType.Bow or ItemType.Trident;
+        }
+        catch
+        {
+            return false; // 拿不到物品信息就按普通物品处理：宁可不补发也不能误发
+        }
+    }
+
+    /// <summary>右键还“按着”蓄力类物品时补发释放包并标记已松开（普通物品不发，保持原行为）。</summary>
+    private void ReleaseRight(ButtonState st)
+    {
+        if (st.Side != MouseSide.Right || !st.UsingCharge)
+            return;
+
+        st.UsingCharge = false;
+        SendReleaseUseItem();
+    }
+
+    /// <summary>
+    /// 补发 Player Action status 5（RELEASE_USE_ITEM）。原版客户端在右键松开时必发这个包，
+    /// 服务端收到后才结算蓄力（弓发射箭、三叉戟投掷）；这里反射 McClient 的私有
+    /// handler/sequenceId 字段按 DropSelectedItem（status 3/4）同款写法发包，序列号同样自增。
+    /// 只在手持弓/三叉戟的按下之后调用（见 ReleaseRight）。
+    /// </summary>
+    private bool SendReleaseUseItem()
+    {
+        if (!_inGame)
+            return false;
+
+        if (ReleaseHandlerField is null || ReleaseSequenceField is null)
+        {
+            if (!_releaseApiMissingLogged)
+            {
+                _releaseApiMissingLogged = true;
+                LogToConsole("§e[鼠标] 未找到 MCC 内部发包字段：右键松开的释放包无法补发（弓箭蓄力不结算）。");
+            }
+
+            return false;
+        }
+
+        try
+        {
+            return InvokeOnMainThread(() =>
+            {
+                McClient client = Handler;
+                if (ReleaseHandlerField.GetValue(client) is not IMinecraftCom com
+                    || ReleaseSequenceField.GetValue(client) is not int sequence)
+                {
+                    return false;
+                }
+
+                // 与 McClient 内部的 sequenceId++ 一致：先自增字段，再用旧值发包
+                ReleaseSequenceField.SetValue(client, sequence + 1);
+                return com.SendPlayerDigging(5, GetCurrentLocation().ToFloor(), Direction.Down, sequence);
+            });
+        }
+        catch (Exception ex)
+        {
+            LogToConsole($"§e[鼠标] 补发右键释放包失败：{ex.Message}");
+            return false;
+        }
     }
 
     public override void Update()
@@ -164,6 +276,7 @@ internal sealed class MouseControlBot : ChatBot
         if (!cfg.Enabled)
         {
             // 关掉就回到“未按下”：重新启用时从一次完整的按下开始（右键不会莫名其妙处于按住状态）
+            ReleaseRight(st); // 还按着弓/三叉戟的话先补发释放包，服务端别停在蓄力状态
             Reset(st);
             return;
         }
@@ -177,11 +290,16 @@ internal sealed class MouseControlBot : ChatBot
                     {
                         // 长按 = 一直按住不松手（按住/间隔参数不生效）。
                         // 持续按住的原版语义 = 周期性重新决策：对着方块 UseItemOn（连续放置/交互），
-                        // 空处 UseItem；成功才挥手。协议里没有“右键释放”包，停止发送即释放。
+                        // 空处 UseItem；成功才挥手。松开（关按钮/切模式/卸载）时补发释放包。
                         if (--st.TicksRemaining > 0)
                             return;
 
                         st.TicksRemaining = HoldRightRepeatTicks;
+
+                        // 手持弓/三叉戟正在蓄力：重发按下会打断蓄力，保持按住状态等真正的松开
+                        if (st.UsingCharge)
+                            return;
+
                         if (!Press(st, cfg))
                         {
                             st.Phase = Phase.Cooling;
@@ -194,12 +312,15 @@ internal sealed class MouseControlBot : ChatBot
                     }
 
                     // 间隔长按：按住期间每个 tick 重发“使用物品”，与原版按住右键的行为一致
-                    UseItemInHand();
+                    // （蓄力类物品除外：按下时已开始蓄力，重发可能让服务端重置蓄力进度）
+                    if (!st.UsingCharge)
+                        UseItemInHand();
 
                     if (--st.TicksRemaining > 0)
                         return;
 
                     Trace(st, $"{SideName(st.Side)} 松开");
+                    ReleaseRight(st); // 弓/三叉戟：补发 RELEASE_USE_ITEM，服务端才结算蓄力发射
                     st.Phase = Phase.Cooling;
                     st.TicksRemaining = Ticks(cfg.IntervalMs, cfg.JitterPercent);
                     return;
@@ -246,7 +367,9 @@ internal sealed class MouseControlBot : ChatBot
 
         if (cfg.Mode == MouseMode.IntervalClick)
         {
-            // 间隔点击：按下即完成、直接进冷却；按住 ms 是“间隔长按”的参数，这里绝不参与
+            // 间隔点击：按下即完成、直接进冷却；按住 ms 是“间隔长按”的参数，这里绝不参与。
+            // 蓄力类物品 = 按下即松开，同 tick 补发释放包（与原版快速点一下右键一致）
+            ReleaseRight(st);
             Trace(st, PressLabel(st, "点击"));
             st.Phase = Phase.Cooling;
             st.TicksRemaining = Ticks(cfg.IntervalMs, cfg.JitterPercent);
@@ -332,17 +455,23 @@ internal sealed class MouseControlBot : ChatBot
     {
         if (st.Side == MouseSide.Right)
         {
-            // 与原版一致：视线指着方块就发 UseItemOn（开箱、按按钮、放方块都靠它），
-            // 只发 UseItem 的话“对着方块右键”永远没反应；空处照样用手中物品，本次点击不跳过。
+            // 手持“松开才结算”的物品（弓/三叉戟）：蓄力看的是 UseItem、与准星无关（对着方块
+            // 也照常蓄力），所以直接发 UseItem；按下后整个按住期间不再重发，松开时补发释放包
+            // （见 ReleaseRight）。普通物品保持原样：指方块发 UseItemOn（开箱/按按钮/放方块），
+            // 空处发 UseItem——只发 UseItem 的话“对着方块右键”永远没反应，本次点击不跳过。
+            bool chargeItem = IsChargeItem();
             bool hasTarget = TryGetAimBlock(out Location blockTarget, out Direction blockFace);
-            bool ok = hasTarget
-                ? SendPlaceBlock(blockTarget, blockFace, Hand.MainHand, lookAtBlock: false)
-                : UseItemInHand();
+            bool ok = chargeItem
+                ? UseItemInHand()
+                : hasTarget
+                    ? SendPlaceBlock(blockTarget, blockFace, Hand.MainHand, lookAtBlock: false)
+                    : UseItemInHand();
 
-            st.ClickPath = hasTarget ? "指向方块" : "空处";
+            st.ClickPath = chargeItem ? "蓄力" : hasTarget ? "指向方块" : "空处";
             if (ok)
                 SendAnimation(Hand.MainHand);
 
+            st.UsingCharge = ok && chargeItem;
             return ok;
         }
 

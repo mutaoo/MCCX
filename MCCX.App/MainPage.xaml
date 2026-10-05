@@ -14,6 +14,90 @@
     <Page.Resources>
         <!-- 账号列表为空（右侧无选中账号）时，右侧面板折叠成空白页 -->
         <converters:BoolToVisibilityConverter x:Key="BoolToVisibility" />
+
+        <!--
+            账号列表的两种模板（由代码里的 AccountTemplateSelector 按列表项类型挑）：
+            分组打开时列表里混着"组头（AccountGroupHeader）"和"账号（AccountViewModel）"。
+        -->
+        <DataTemplate x:Key="AccountItemTemplate" x:DataType="viewmodels:AccountViewModel">
+            <!-- 悬停时淡入右侧叉号（直接改 Opacity，不改变高度，避免列表项抖动）。
+                 Background 必须给 Transparent：没背景的 Grid 空白处不可命中，
+                 指针落在行内空白区就收不到 PointerEntered，叉号会不亮。 -->
+            <Grid ColumnSpacing="6"
+                  Background="Transparent"
+                  PointerEntered="AccountItem_PointerEntered"
+                  PointerExited="AccountItem_PointerExited">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Row="0" Grid.Column="0"
+                           Text="{x:Bind DisplayName, Mode=OneWay}"
+                           FontWeight="SemiBold"
+                           TextTrimming="CharacterEllipsis" />
+                <!-- 连接状态：从项底移到右侧，只留状态词（地址右侧面板状态条里有） -->
+                <TextBlock Grid.Row="0" Grid.Column="1"
+                           Text="{x:Bind StateBadge, Mode=OneWay}"
+                           FontSize="11"
+                           VerticalAlignment="Center"
+                           TextTrimming="CharacterEllipsis"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+
+                <TextBlock Grid.Row="1" Grid.Column="0"
+                           Text="{x:Bind ServerSummary, Mode=OneWay}"
+                           FontSize="11"
+                           TextTrimming="CharacterEllipsis"
+                           Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                <Button Grid.Row="1" Grid.Column="1"
+                        x:Name="AccountDeleteButton"
+                        AutomationProperties.Name="删除账号"
+                        ToolTipService.ToolTip="删除该账号"
+                        Content="✕"
+                        FontSize="11"
+                        MinWidth="0"
+                        Padding="6,2"
+                        Opacity="0"
+                        VerticalAlignment="Center"
+                        Click="AccountDelete_Click" />
+            </Grid>
+        </DataTemplate>
+
+        <DataTemplate x:Key="AccountGroupHeaderTemplate" x:DataType="viewmodels:AccountGroupHeader">
+            <!-- 组头：服务器地址 + 账号个数。不可选中（点它没意义），所以 IsHitTestVisible 关掉。 -->
+            <Grid IsHitTestVisible="False"
+                  Padding="6,10,6,3"
+                  ColumnSpacing="6">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0"
+                           Text="{x:Bind Title, Mode=OneWay}"
+                           FontSize="11"
+                           FontWeight="SemiBold"
+                           Opacity="0.75"
+                           TextTrimming="CharacterEllipsis" />
+                <TextBlock Grid.Column="1"
+                           Text="{x:Bind Count, Mode=OneWay}"
+                           FontSize="11"
+                           Opacity="0.55"
+                           VerticalAlignment="Center" />
+            </Grid>
+        </DataTemplate>
+    <!--
+            日志行的右键菜单（2026-10-05 用户要求：去掉底部"复制日志"按钮，
+            改成选中文字后右键出现复制）。
+            「复制」复制选中的那几个字（没选中就复制整行），「打开链接」交给系统浏览器。
+        -->
+        <MenuFlyout x:Key="LogContextMenu">
+            <MenuFlyoutItem Text="复制" Click="LogContextCopy_Click" />
+            <MenuFlyoutItem Text="打开链接" Click="LogContextOpenLink_Click" />
+        </MenuFlyout>
     </Page.Resources>
 
     <Grid Padding="12,12">
@@ -39,6 +123,8 @@
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="*" />
+                    <!-- 第三行：卡片底部的全局设置（暗色模式开关） -->
+                    <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
                 <Grid Grid.Row="0">
@@ -60,11 +146,18 @@
 
                 <ListView Grid.Row="1"
                           x:Name="AccountList"
-                          ItemsSource="{x:Bind ViewModel.Accounts, Mode=OneWay}"
+                          ItemsSource="{x:Bind ViewModel.AccountsView}"
                           SelectedItem="{x:Bind ViewModel.SelectedAccount, Mode=TwoWay}"
                           SelectionMode="Single"
+                          Padding="0,0,14,0"
                           ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                           ScrollViewer.HorizontalScrollMode="Disabled">
+                    <!--
+                        ItemTemplateSelector 在代码里挂（MainPage 构造）：WinUI 3 没有 UWP 的
+                        GroupStyle/IGroupable，所以"按服务器分组"是把组头也当成列表项，
+                        由 AccountTemplateSelector 按类型选下面两个模板。
+                        Padding 右侧留 14 是给浮动滚动条留位，否则它会压住"未连接"那几个字。
+                    -->
                     <ListView.ItemContainerStyle>
                         <Style TargetType="ListViewItem">
                             <!-- 内容拉满整行，右侧的状态/叉号才能贴到卡片右边缘 -->
@@ -72,56 +165,69 @@
                             <Setter Property="Padding" Value="6,4" />
                         </Style>
                     </ListView.ItemContainerStyle>
-                    <ListView.ItemTemplate>
-                        <DataTemplate x:DataType="viewmodels:AccountViewModel">
-                            <!-- 悬停时淡入右侧叉号（直接改 Opacity，不改变高度，避免列表项抖动）。
-                                 Background 必须给 Transparent：没背景的 Grid 空白处不可命中，
-                                 指针落在行内空白区就收不到 PointerEntered，叉号会不亮。 -->
-                            <Grid ColumnSpacing="6"
-                                  Background="Transparent"
-                                  PointerEntered="AccountItem_PointerEntered"
-                                  PointerExited="AccountItem_PointerExited">
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="Auto" />
-                                </Grid.RowDefinitions>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-
-                                <TextBlock Grid.Row="0" Grid.Column="0"
-                                           Text="{x:Bind DisplayName, Mode=OneWay}"
-                                           FontWeight="SemiBold"
-                                           TextTrimming="CharacterEllipsis" />
-                                <!-- 连接状态：从项底移到右侧，只留状态词（地址右侧面板状态条里有） -->
-                                <TextBlock Grid.Row="0" Grid.Column="1"
-                                           Text="{x:Bind StateBadge, Mode=OneWay}"
-                                           FontSize="11"
-                                           VerticalAlignment="Center"
-                                           TextTrimming="CharacterEllipsis"
-                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-
-                                <TextBlock Grid.Row="1" Grid.Column="0"
-                                           Text="{x:Bind ServerSummary, Mode=OneWay}"
-                                           FontSize="11"
-                                           TextTrimming="CharacterEllipsis"
-                                           Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
-                                <Button Grid.Row="1" Grid.Column="1"
-                                        x:Name="AccountDeleteButton"
-                                        AutomationProperties.Name="删除账号"
-                                        ToolTipService.ToolTip="删除该账号"
-                                        Content="✕"
-                                        FontSize="11"
-                                        MinWidth="0"
-                                        Padding="6,2"
-                                        Opacity="0"
-                                        VerticalAlignment="Center"
-                                        Click="AccountDelete_Click" />
-                            </Grid>
-                        </DataTemplate>
-                    </ListView.ItemTemplate>
                 </ListView>
+
+                <!--
+                底部一行（2026-10-05 用户要求）：左边是"按服务器分组"按钮，右边是暗色模式开关。
+                · 分组：同一台服务器（域名/IP 相同，端口不参与判断）的账号归到一个组，组头显示域名。
+                · 暗色开关：不再有"暗色模式"文字（用户要求移除），只留一个月亮/太阳小开关；
+                  开（勾选、滑块在右、月亮）= 暗色 #121212，关（滑块在左、太阳）= 浅色；
+                  提示文本只显示当前状态（"暗色模式 开 / 关"）。
+                两者的状态都写 ui-settings.json，下次启动保持（见 UiSettingsStore / MainWindow.ApplyTheme）。
+            -->
+                <Grid Grid.Row="2" ColumnSpacing="6">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <Button x:Name="GroupAccountsButton"
+                            Grid.Column="0"
+                            Content="按服务器分组"
+                            AutomationProperties.Name="按服务器分组"
+                            FontSize="12"
+                            Padding="8,3"
+                            MinWidth="0"
+                            VerticalAlignment="Center"
+                            ToolTipService.ToolTip="把同一个服务器的账号归到一个分类里（只看域名/IP，不看端口）"
+                            Click="GroupAccountsButton_Click" />
+                    <ToggleButton x:Name="ThemeSwitch"
+                                  Grid.Column="2"
+                                  AutomationProperties.Name="暗色模式切换"
+                                  ToolTipService.ToolTip="暗色模式 关"
+                                  Click="ThemeSwitch_Click"
+                                  Width="46" Height="24"
+                                  HorizontalAlignment="Right"
+                                  VerticalAlignment="Center"
+                                  Background="Transparent"
+                                  BorderThickness="0"
+                                  Padding="0">
+                        <ToggleButton.Template>
+                            <ControlTemplate TargetType="ToggleButton">
+                                <!-- 只保留内容，去掉按钮自带外观；视觉全在下面三个具名元素上，
+                                     代码里能直接引用（GetTemplateChild 是 protected，页面拿不到）。
+                                     配色/图标/滑块位置/提示文本由 ApplyThemeSwitchVisual 按状态改：
+                                     勾选 = 开 = 暗色（滑块在右），不勾 = 关 = 浅色（滑块在左）。 -->
+                                <ContentPresenter />
+                            </ControlTemplate>
+                        </ToggleButton.Template>
+                        <Grid Width="46" Height="24">
+                            <Border x:Name="ThemeSwitchTrack" CornerRadius="12" Background="#333333" />
+                            <Ellipse x:Name="ThemeSwitchThumb"
+                                     Width="20" Height="20"
+                                     HorizontalAlignment="Left"
+                                     Margin="2,0,0,0"
+                                     Fill="#E8E4D8" />
+                            <TextBlock x:Name="ThemeSwitchGlyph"
+                                       Text="&#x263E;"
+                                       FontSize="11"
+                                       Foreground="#1A1A1A"
+                                       Width="20" Height="20"
+                                       TextAlignment="Center"
+                                       VerticalAlignment="Center" />
+                        </Grid>
+                    </ToggleButton>
+                </Grid>
             </Grid>
         </Border>
 
@@ -240,12 +346,14 @@
                     功能开关横排；每个功能的参数不再平铺，收进开关旁边的下拉按钮（Flyout）。
                     AutomationProperties.Name 保持与原 UI 一致，自动化测试仍可定位。
                     外面套 ScrollViewer：窗口变窄时横向滚动，而不是把最后面的功能裁掉。
+                    底部固定留一截空白（2026-10-04 需求）：横向滚动条出现时叠在这段留白上，
+                    不再盖住 / 挤压行内功能文字；不溢出时滚动条不显示，留白只是下边距。
                 -->
                 <ScrollViewer HorizontalScrollMode="Enabled"
                               HorizontalScrollBarVisibility="Auto"
                               VerticalScrollMode="Disabled"
                               VerticalScrollBarVisibility="Disabled">
-                    <StackPanel x:Name="AutomationRow" Orientation="Horizontal" Spacing="14">
+                    <StackPanel x:Name="AutomationRow" Orientation="Horizontal" Spacing="14" Margin="0,0,0,16">
 
                     <!--
                         自动砍怪：标签本身就是下拉按钮——点“自动砍怪”文字即展开参数，
@@ -426,7 +534,7 @@
                                                 <ColumnDefinition Width="76" />
                                                 <ColumnDefinition Width="*" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock Text="间隔 ms：" VerticalAlignment="Center" />
+                                            <TextBlock Text="间隔（ms）：" VerticalAlignment="Center" />
                                             <TextBox Grid.Column="1"
                                                      AutomationProperties.Name="左键间隔"
                                                      IsSpellCheckEnabled="False"
@@ -438,7 +546,7 @@
                                                 <ColumnDefinition Width="76" />
                                                 <ColumnDefinition Width="*" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock Text="抖动 %：" VerticalAlignment="Center" />
+                                            <TextBlock Text="抖动（%）：" VerticalAlignment="Center" />
                                             <TextBox Grid.Column="1"
                                                      AutomationProperties.Name="左键抖动"
                                                      IsSpellCheckEnabled="False"
@@ -492,7 +600,7 @@
                                                 <ColumnDefinition Width="76" />
                                                 <ColumnDefinition Width="*" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock Text="间隔 ms：" VerticalAlignment="Center" />
+                                            <TextBlock Text="间隔（ms）：" VerticalAlignment="Center" />
                                             <TextBox Grid.Column="1"
                                                      AutomationProperties.Name="右键间隔"
                                                      IsSpellCheckEnabled="False"
@@ -504,7 +612,7 @@
                                                 <ColumnDefinition Width="76" />
                                                 <ColumnDefinition Width="*" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock Text="抖动 %：" VerticalAlignment="Center" />
+                                            <TextBlock Text="抖动（%）：" VerticalAlignment="Center" />
                                             <TextBox Grid.Column="1"
                                                      AutomationProperties.Name="右键抖动"
                                                      IsSpellCheckEnabled="False"
@@ -526,9 +634,91 @@
                                       IsOn="{x:Bind ViewModel.MouseEnabled, Mode=TwoWay}" />
                     </StackPanel>
 
-                    <!-- 自动钓鱼（无参数，不放下拉按钮） -->
+                    <!-- 自动钓鱼（2026-10-04：加入参数下拉——收杆检测声音/实体、抛竿超时、重抛间隔） -->
                     <StackPanel Orientation="Horizontal" Spacing="4">
-                        <TextBlock Text="自动钓鱼" VerticalAlignment="Center" />
+                        <DropDownButton AutomationProperties.Name="自动钓鱼选项"
+                                        ToolTipService.ToolTip="自动钓鱼参数"
+                                        Padding="8,2"
+                                        MinWidth="0"
+                                        PointerEntered="LabelButton_PointerEntered"
+                                        PointerExited="LabelButton_PointerExited">
+                            <TextBlock Text="自动钓鱼" VerticalAlignment="Center" />
+                            <DropDownButton.Flyout>
+                                <Flyout Placement="Bottom" Opened="OnFlyoutOpened">
+                                    <!-- 宽度与砍怪/鼠标/重连弹层统一 312 -->
+                                    <StackPanel Spacing="8" Width="312">
+                                        <TextBlock Text="收杆检测"
+                                                   FontWeight="SemiBold"
+                                                   ToolTipService.ToolTip="浮漂实体位移检测（咬钩下沉）始终开启；下面两个是额外的检测方式" />
+
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock VerticalAlignment="Center"
+                                                       Text="声音检测（水花声）"
+                                                       ToolTipService.ToolTip="听到浮漂附近的水花声就收杆（MCC Enable_Sound_Detection，默认开）" />
+                                            <ToggleSwitch Grid.Column="1"
+                                                          AutomationProperties.Name="钓鱼声音检测"
+                                                          MinWidth="0"
+                                                          IsOn="{x:Bind ViewModel.FishingSoundDetection, Mode=TwoWay}" />
+                                        </Grid>
+
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock VerticalAlignment="Center"
+                                                       Text="实体检测（浮漂速度）"
+                                                       ToolTipService.ToolTip="按浮漂速度包判断咬钩，水面被挡住时更稳（MCC Enable_Velocity_Detection，默认开）" />
+                                            <ToggleSwitch Grid.Column="1"
+                                                          AutomationProperties.Name="钓鱼实体检测"
+                                                          MinWidth="0"
+                                                          IsOn="{x:Bind ViewModel.FishingVelocityDetection, Mode=TwoWay}" />
+                                        </Grid>
+
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="76" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="超时（秒）：" VerticalAlignment="Center" />
+                                            <TextBox Grid.Column="1"
+                                                     AutomationProperties.Name="钓鱼抛竿超时"
+                                                     IsSpellCheckEnabled="False"
+                                                     IsTextPredictionEnabled="False"
+                                                     PlaceholderText="300"
+                                                     ToolTipService.ToolTip="多久没咬钩算超时并重新抛竿（MCC Fishing_Timeout，默认 300 秒）"
+                                                     Text="{x:Bind ViewModel.FishingTimeout, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                        </Grid>
+
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="76" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="重抛间隔（秒）：" VerticalAlignment="Center" />
+                                            <TextBox Grid.Column="1"
+                                                     AutomationProperties.Name="钓鱼重抛间隔"
+                                                     IsSpellCheckEnabled="False"
+                                                     IsTextPredictionEnabled="False"
+                                                     PlaceholderText="0.4"
+                                                     ToolTipService.ToolTip="收杆后 / 超时后隔多久重新抛竿（MCC Cast_Delay，默认 0.4 秒）"
+                                                     Text="{x:Bind ViewModel.FishingCastDelay, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                        </Grid>
+
+                                        <!-- 2026-10-05 用户要求删掉"浮漂位移检测没有开关、始终启用"那句，只留参数默认值说明 -->
+                                        <TextBlock Text="参数默认值与 MCC 配置一致；留空或填错会退回默认值。"
+                                                   FontSize="12"
+                                                   Opacity="0.7"
+                                                   TextWrapping="Wrap" />
+                                    </StackPanel>
+                                </Flyout>
+                            </DropDownButton.Flyout>
+                        </DropDownButton>
+
                         <ToggleSwitch AutomationProperties.Name="自动钓鱼"
                                       MinWidth="0"
                                       IsOn="{x:Bind ViewModel.FishingEnabled, Mode=TwoWay}" />
@@ -557,6 +747,8 @@
                                                      AutomationProperties.Name="重连次数"
                                                      IsSpellCheckEnabled="False"
                                                      IsTextPredictionEnabled="False"
+                                                     PlaceholderText="0 = 无限"
+                                                     ToolTipService.ToolTip="留 0 表示无限次重连（默认）；填正数表示最多重连几次"
                                                      Text="{x:Bind ViewModel.ReconnectAttempts, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
                                         </Grid>
                                         <Grid ColumnSpacing="8">
@@ -564,14 +756,14 @@
                                                 <ColumnDefinition Width="76" />
                                                 <ColumnDefinition Width="*" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock Text="间隔 ms：" VerticalAlignment="Center" />
+                                            <TextBlock Text="间隔（ms）：" VerticalAlignment="Center" />
                                             <TextBox Grid.Column="1"
                                                      AutomationProperties.Name="重连间隔"
                                                      IsSpellCheckEnabled="False"
                                                      IsTextPredictionEnabled="False"
                                                      Text="{x:Bind ViewModel.ReconnectDelayMs, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
                                         </Grid>
-                                        <TextBlock Text="断线后按次数与间隔自动重连。"
+                                        <TextBlock Text="断线后按间隔自动重连；次数填 0 表示无限重连，关掉开关会立即停止正在进行的重连。"
                                                    FontSize="12"
                                                    Opacity="0.7"
                                                    TextWrapping="Wrap" />
@@ -584,6 +776,199 @@
                                       MinWidth="0"
                                       IsOn="{x:Bind ViewModel.ReconnectEnabled, Mode=TwoWay}" />
                     </StackPanel>
+
+                    <!--
+                        视角调整（2026-10-04 起）：行上只留“视角调整 ▾”，弹层里只有 6 个
+                        “视角移动”按钮——进服恢复开关已按用户要求移除（进服沿用服务器记忆的
+                        视角、不自动改变，与 MCC 进服体验一致，本地不再存视角）。
+                    -->
+                    <StackPanel Orientation="Horizontal" Spacing="4">
+                        <DropDownButton AutomationProperties.Name="视角调整选项"
+                                        ToolTipService.ToolTip="视角调整：点一下立刻把视角转向指定方向"
+                                        Padding="8,2"
+                                        MinWidth="0"
+                                        PointerEntered="LabelButton_PointerEntered"
+                                        PointerExited="LabelButton_PointerExited">
+                            <TextBlock Text="视角调整" VerticalAlignment="Center" />
+                            <DropDownButton.Flyout>
+                                <Flyout Placement="Bottom" Opened="OnFlyoutOpened">
+                                    <!-- 宽度与砍怪/鼠标/重连弹层统一 312；2026-10-05 用户要求去掉上下两段解释文字，只留按钮 -->
+                                    <StackPanel Spacing="8" Width="312">
+                                        <TextBlock Text="视角移动"
+                                                   FontWeight="SemiBold"
+                                                   ToolTipService.ToolTip="点一下立刻把视角转向指定方向（一次性生效）" />
+                                        <Grid ColumnSpacing="6" RowSpacing="6">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                            </Grid.RowDefinitions>
+
+                                            <Button Grid.Row="0" Grid.Column="0"
+                                                    AutomationProperties.Name="视角向东"
+                                                    Padding="8,6"
+                                                    Tag="east"
+                                                    Click="LookDirection_Click"
+                                                    PointerEntered="LabelButton_PointerEntered"
+                                                    PointerExited="LabelButton_PointerExited">
+                                                <TextBlock Text="向东" VerticalAlignment="Center" />
+                                            </Button>
+                                            <Button Grid.Row="0" Grid.Column="1"
+                                                    AutomationProperties.Name="视角向南"
+                                                    Padding="8,6"
+                                                    Tag="south"
+                                                    Click="LookDirection_Click"
+                                                    PointerEntered="LabelButton_PointerEntered"
+                                                    PointerExited="LabelButton_PointerExited">
+                                                <TextBlock Text="向南" VerticalAlignment="Center" />
+                                            </Button>
+                                            <Button Grid.Row="0" Grid.Column="2"
+                                                    AutomationProperties.Name="视角向西"
+                                                    Padding="8,6"
+                                                    Tag="west"
+                                                    Click="LookDirection_Click"
+                                                    PointerEntered="LabelButton_PointerEntered"
+                                                    PointerExited="LabelButton_PointerExited">
+                                                <TextBlock Text="向西" VerticalAlignment="Center" />
+                                            </Button>
+
+                                            <Button Grid.Row="1" Grid.Column="0"
+                                                    AutomationProperties.Name="视角向北"
+                                                    Padding="8,6"
+                                                    Tag="north"
+                                                    Click="LookDirection_Click"
+                                                    PointerEntered="LabelButton_PointerEntered"
+                                                    PointerExited="LabelButton_PointerExited">
+                                                <TextBlock Text="向北" VerticalAlignment="Center" />
+                                            </Button>
+                                            <Button Grid.Row="1" Grid.Column="1"
+                                                    AutomationProperties.Name="视角抬头看天"
+                                                    Padding="8,6"
+                                                    Tag="up"
+                                                    Click="LookDirection_Click"
+                                                    PointerEntered="LabelButton_PointerEntered"
+                                                    PointerExited="LabelButton_PointerExited">
+                                                <TextBlock Text="抬头看天" VerticalAlignment="Center" />
+                                            </Button>
+                                            <Button Grid.Row="1" Grid.Column="2"
+                                                    AutomationProperties.Name="视角低头看地"
+                                                    Padding="8,6"
+                                                    Tag="down"
+                                                    Click="LookDirection_Click"
+                                                    PointerEntered="LabelButton_PointerEntered"
+                                                    PointerExited="LabelButton_PointerExited">
+                                                <TextBlock Text="低头看地" VerticalAlignment="Center" />
+                                            </Button>
+                                        </Grid>
+                                    </StackPanel>
+                                </Flyout>
+                            </DropDownButton.Flyout>
+                        </DropDownButton>
+                    </StackPanel>
+
+                    <!--
+                        自动补充（2026-10-03 第五批需求）：手持用完/损坏时自动从背包补同款。
+                        没有参数要调，不上下拉按钮，行尾直接"文字 + 开关"；
+                        行内放不下时靠外面的 ScrollViewer 横向滑出来（用户要求：一行显示不全就左右滑动显示）。
+                    -->
+                    <StackPanel Orientation="Horizontal" Spacing="4">
+                        <TextBlock Text="自动补充"
+                                   VerticalAlignment="Center"
+                                   ToolTipService.ToolTip="手持物品用完/损坏消失时，自动从背包找同款补到手上（主背包优先，其他快捷栏兜底，副手不参与）" />
+                        <ToggleSwitch AutomationProperties.Name="自动补充"
+                                      MinWidth="0"
+                                      IsOn="{x:Bind ViewModel.AutoRefillEnabled, Mode=TwoWay}" />
+                    </StackPanel>
+
+                    <!--
+                        自动行走（2026-10-04 需求）：只管一直朝前走。
+                        没有参数，和"自动补充"同款：行尾"文字 + 开关"，放不下靠 ScrollViewer 横滑。
+                    -->
+                    <StackPanel Orientation="Horizontal" Spacing="4">
+                        <TextBlock Text="自动行走"
+                                   VerticalAlignment="Center"
+                                   ToolTipService.ToolTip="进服后持续朝当前朝向前进（自动寻路，遇墙绕行/遇高差会重试）；关掉开关或断开连接即停" />
+                        <ToggleSwitch AutomationProperties.Name="自动行走"
+                                      MinWidth="0"
+                                      IsOn="{x:Bind ViewModel.AutoWalkEnabled, Mode=TwoWay}" />
+                    </StackPanel>
+
+                    <!--
+                        服务器信息过滤：没有总开关，标签本身就是下拉按钮——
+                        过滤方式与两个前缀框都收进弹层（与前面各功能的参数下拉同一套交互，点文字即展开）。
+                        只管"服务器发来的消息"进不进日志，Bot 提示和连接提示不受影响；
+                        两个前缀类方式各用各的前缀框（2026-10-05 用户要求：
+                        "只显示"和"只屏蔽"以前共用一个框，切方式就得重填）。
+                    -->
+                    <DropDownButton AutomationProperties.Name="服务器信息过滤选项"
+                                    ToolTipService.ToolTip="服务器信息过滤参数：过滤方式 / 两个独立的前缀列表（只影响服务器消息进不进日志，连接提示、Bot 日志不受影响）"
+                                    Padding="8,2"
+                                    MinWidth="0"
+                                    PointerEntered="LabelButton_PointerEntered"
+                                    PointerExited="LabelButton_PointerExited">
+                        <TextBlock Text="服务器信息过滤" VerticalAlignment="Center" />
+                        <DropDownButton.Flyout>
+                            <Flyout Placement="Bottom" Opened="OnFlyoutOpened">
+                                <StackPanel Spacing="8" Width="312">
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="76" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="过滤方式：" VerticalAlignment="Center" />
+                                        <ComboBox Grid.Column="1"
+                                                  AutomationProperties.Name="服务器信息过滤"
+                                                  MinWidth="0"
+                                                  HorizontalAlignment="Stretch"
+                                                  SelectedIndex="{x:Bind ViewModel.ServerFilterModeIndex, Mode=TwoWay}">
+                                            <ComboBoxItem Content="不过滤" />
+                                            <ComboBoxItem Content="全屏蔽" />
+                                            <ComboBoxItem Content="屏蔽玩家消息" />
+                                            <ComboBoxItem Content="只显示指定前缀" />
+                                            <ComboBoxItem Content="只屏蔽指定前缀" />
+                                        </ComboBox>
+                                    </Grid>
+                                    <!-- 两个前缀框各自独立保存：选"只显示指定前缀"只显示上面这个，
+                                     选"只屏蔽指定前缀"只显示下面那个（2026-10-05 用户要求互斥显示）。
+                                     可见性由 SyncServerFilterRows 按 ServerFilterModeIndex 切。 -->
+                                    <Grid x:Name="ServerFilterShowRow" ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="76" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="只显示：" VerticalAlignment="Center" />
+                                        <TextBox Grid.Column="1"
+                                                 AutomationProperties.Name="服务器信息只显示前缀"
+                                                 IsSpellCheckEnabled="False"
+                                                 IsTextPredictionEnabled="False"
+                                                 PlaceholderText="如 [公告],[活动]"
+                                                 Text="{x:Bind ViewModel.ServerFilterShowPrefix, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                    </Grid>
+                                    <Grid x:Name="ServerFilterBlockRow" ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="76" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="只屏蔽：" VerticalAlignment="Center" />
+                                        <TextBox Grid.Column="1"
+                                                 AutomationProperties.Name="服务器信息只屏蔽前缀"
+                                                 IsSpellCheckEnabled="False"
+                                                 IsTextPredictionEnabled="False"
+                                                 PlaceholderText="如 [广告],[spam]"
+                                                 Text="{x:Bind ViewModel.ServerFilterBlockPrefix, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                    </Grid>
+                                    <TextBlock Text="只影响服务器消息进不进日志（连接提示、Bot 日志不受影响）；前缀可多个，用逗号/顿号/竖线分隔，命中任一项即按所选方式处理；留空等于不过滤。"
+                                               FontSize="12"
+                                               Opacity="0.7"
+                                               TextWrapping="Wrap" />
+                                </StackPanel>
+                            </Flyout>
+                        </DropDownButton.Flyout>
+                    </DropDownButton>
 
                     </StackPanel>
                 </ScrollViewer>
@@ -602,46 +987,160 @@
                        Text="{x:Bind ViewModel.StateText, Mode=OneWay}"
                        TextTrimming="CharacterEllipsis" />
 
-            <!-- 日志 -->
-            <ListView Grid.Row="3"
-                      x:Name="LogList"
-                      ItemsSource="{x:Bind ViewModel.Logs, Mode=OneWay}"
-                      SelectionMode="None"
-                      IsItemClickEnabled="False"
-                      ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                      ScrollViewer.HorizontalScrollMode="Disabled"
-                      ScrollViewer.VerticalScrollBarVisibility="Auto"
-                      ScrollViewer.VerticalScrollMode="Auto">
-                <ListView.ItemTemplate>
-                    <DataTemplate x:DataType="viewmodels:LogEntry">
-                        <!-- OneWay：连续重复日志合并时 Text 会就地变成“原文 xN”，要跟着刷新 -->
-                        <TextBlock Text="{x:Bind Text, Mode=OneWay}"
-                                   TextWrapping="Wrap"
-                                   FontFamily="Consolas"
-                                   FontSize="12" />
-                    </DataTemplate>
-                </ListView.ItemTemplate>
-            </ListView>
+            <!--
+                日志（2026-10-05 用户要求：控制台要能像记事本一样在行内自由框选文字）：
+                · 用 ItemsRepeater 而不是 ListView —— ListView 会在行内**抢走指针**做自己的选中，
+                  放进 ListViewItem 的 TextBox 根本拖不出选择范围（实测怎么拖都没反应）。
+                  ItemsRepeater 没有任何选中逻辑，TextBox 的原生框选才生效。
+                · 每行是一个只读 TextBox：可自由框选、Ctrl+C 复制选中的字、右键菜单复制 / 打开链接。
+                · 行里有链接时鼠标移上去整行加下划线；Ctrl+点击或右键"打开链接"交给浏览器。
+                · ScrollViewer 显式写出来并命名（LogScrollHost）：既给 ItemsRepeater 当宿主，
+                  也让"跟随最新一行"和自动化测试都能直接定位它。
+            -->
+            <ScrollViewer x:Name="LogScrollHost"
+                          Grid.Row="3"
+                          VerticalScrollBarVisibility="Auto"
+                          VerticalScrollMode="Auto"
+                          HorizontalScrollBarVisibility="Disabled"
+                          HorizontalScrollMode="Disabled">
+                <ItemsRepeater x:Name="LogList"
+                               ItemsSource="{x:Bind ViewModel.Logs, Mode=OneWay}"
+                               ContextFlyout="{StaticResource LogContextMenu}"
+                               Tapped="LogList_Tapped"
+                               RightTapped="LogList_RightTapped"
+                               Loaded="LogList_Loaded">
+                    <ItemsRepeater.ItemTemplate>
+                        <DataTemplate x:DataType="viewmodels:LogEntry">
+                            <Grid Background="Transparent"
+                                  PointerEntered="LogItem_PointerEntered"
+                                  PointerExited="LogItem_PointerExited">
+                                <!--
+                                    只读 TextBox 而不是 TextBlock：WinUI 3 的 TextBox 原生就能在行内
+                                    自由框选，并能把选中的那几个字读出来（SelectedText）给右键菜单复制。
+                                    视觉上把边框/背景/内边距都去掉，看起来仍是一行纯文本。
+                                    SelectionHighlightColor 显式给：默认选中高亮太淡，浅色/暗色底上
+                                    都几乎看不出选中（用户 2026-10-05 反馈"无法判断是否被选中"）。
+                                -->
+                                <TextBox Text="{x:Bind Text, Mode=OneWay}"
+                                         IsReadOnly="True"
+                                         AcceptsReturn="True"
+                                         IsTabStop="False"
+                                         BorderThickness="0"
+                                         Background="Transparent"
+                                         Padding="0"
+                                         TextWrapping="Wrap"
+                                         SelectionHighlightColor="#4080D0FF"
+                                         FontFamily="Consolas"
+                                         FontSize="12" />
+                            </Grid>
+                        </DataTemplate>
+                    </ItemsRepeater.ItemTemplate>
+                </ItemsRepeater>
+            </ScrollViewer>
 
-            <!-- 命令栏 -->
+            <!-- 命令栏：左“常用命令”下拉、中间输入框、右“发送 / 清空日志”（"复制日志"按钮已按用户要求移除） -->
             <Grid Grid.Row="4" ColumnSpacing="8">
                 <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
-                <TextBox Grid.Column="0"
+                <!-- 常用命令：自动记录发过的内部命令，也能手动增删；点一条填进输入框 -->
+                <Button Grid.Column="0"
+                        x:Name="FrequentCommandsButton"
+                        Content="常用命令"
+                        AutomationProperties.Name="常用命令"
+                        ToolTipService.ToolTip="自动记录用过的命令，可手动添加、删除；点一条填进输入框">
+                    <Button.Flyout>
+                        <Flyout x:Name="FrequentCommandsFlyout"
+                                Opening="OnFrequentFlyoutOpening">
+                            <!-- 2026-10-05 用户要求：440 太宽、命令短、显得空旷 → 收到 320；
+                                 列表右侧留 14 给浮动滚动条，避免压住命令文字。 -->
+                            <StackPanel Width="320" Spacing="4">
+                                <TextBlock Text="点一条填进输入框；✕ 删除"
+                                           FontSize="11"
+                                           Opacity="0.7" />
+
+                                <ListView x:Name="FrequentCommandsList"
+                                          MaxHeight="260"
+                                          Padding="0,0,12,0"
+                                          ItemsSource="{x:Bind ViewModel.FrequentCommands, Mode=OneWay}"
+                                          SelectionMode="None"
+                                          IsItemClickEnabled="True"
+                                          ItemClick="FrequentCommand_Click"
+                                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                          ScrollViewer.VerticalScrollBarVisibility="Auto">
+                                    <!-- 行距收紧（用户反馈"太空旷"）：上下内边距 4→2，字号 13 -->
+                                    <ListView.ItemContainerStyle>
+                                        <Style TargetType="ListViewItem">
+                                            <Setter Property="Padding" Value="6,2" />
+                                            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                        </Style>
+                                    </ListView.ItemContainerStyle>
+                                    <ListView.ItemTemplate>
+                                        <DataTemplate x:DataType="accounts:FrequentCommand">
+                                            <Grid ColumnSpacing="4">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Text="{x:Bind Text}"
+                                                           FontSize="13"
+                                                           VerticalAlignment="Center"
+                                                           TextTrimming="CharacterEllipsis" />
+                                                <Button Grid.Column="1"
+                                                        Content="✕"
+                                                        MinWidth="0"
+                                                        Padding="6,2"
+                                                        FontSize="11"
+                                                        VerticalAlignment="Center"
+                                                        AutomationProperties.Name="删除常用命令"
+                                                        ToolTipService.ToolTip="删除这条常用命令"
+                                                        Click="RemoveFrequentCommand_Click" />
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ListView.ItemTemplate>
+                                </ListView>
+
+                                <TextBlock x:Name="FrequentCommandsEmptyHint"
+                                           Text="还没有常用命令：发出 / 开头的命令后会自动记录。"
+                                           FontSize="11"
+                                           Opacity="0.6"
+                                           TextWrapping="Wrap" />
+
+                                <Grid ColumnSpacing="6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox x:Name="NewFrequentCommandBox"
+                                             PlaceholderText="手动输入一条命令"
+                                             IsSpellCheckEnabled="False"
+                                             IsTextPredictionEnabled="False"
+                                             KeyDown="NewFrequentCommand_KeyDown" />
+                                    <Button Grid.Column="1"
+                                            Content="添加"
+                                            AutomationProperties.Name="添加常用命令"
+                                            Click="AddFrequentCommand_Click" />
+                                </Grid>
+                            </StackPanel>
+                        </Flyout>
+                    </Button.Flyout>
+                </Button>
+
+                <TextBox Grid.Column="1"
                          x:Name="CommandBox"
                          IsSpellCheckEnabled="False"
                          IsTextPredictionEnabled="False"
                          Text="{x:Bind ViewModel.CommandInput, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                          PlaceholderText="聊天或 MCC 命令（/ 开头为内部命令），回车发送"
                          KeyDown="CommandBox_KeyDown" />
-                <Button Grid.Column="1"
+                <Button Grid.Column="2"
                         Content="发送"
                         Command="{x:Bind ViewModel.SendCommand}" />
-                <Button Grid.Column="2"
+                <Button Grid.Column="3"
                         Content="清空日志"
                         Command="{x:Bind ViewModel.ClearLogCommand}" />
             </Grid>

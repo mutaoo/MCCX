@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Windows.Input;
 using MCCX.Core;
+using MCCX.Core.Dialogs;
 using MCCX.Core.Ipc;
 using MCCX.Core.Networking;
 using MinecraftClient.Scripting;
@@ -36,6 +37,18 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
     private bool _isConnected;
     private bool _disposed;
 
+    // ---- 命令输入历史（上/下方向键翻上一条、下一条）----
+    private readonly List<string> _commandHistory = [];
+
+    /// <summary>当前指向历史里的位置；等于 Count 表示"停在最末尾"（还没开始翻）。</summary>
+    private int _commandHistoryIndex;
+
+    /// <summary>开始翻历史时暂存的半截输入（翻到底后原样还回去）。</summary>
+    private string _historyDraft = string.Empty;
+
+    /// <summary>程序自己在回填输入框：不要把这次回填当成"用户改了字"。</summary>
+    private bool _historyNavigating;
+
     public AccountViewModel(
         AccountProfile profile,
         DispatcherQueue dispatcherQueue,
@@ -43,13 +56,17 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
     {
         _profile = profile ?? throw new ArgumentNullException(nameof(profile));
         _dispatcherQueue = dispatcherQueue ?? throw new ArgumentNullException(nameof(dispatcherQueue));
-        _session = session ?? new RunnerProcess();
+        // 账号 Id 透传给子进程：视角记录按账号落盘（需求 1）
+        _session = session ?? new RunnerProcess(accountId: profile.Id);
 
         _serverHost = profile.ServerHost;
         _serverPort = profile.Port.ToString(CultureInfo.InvariantCulture);
         _username = profile.Username;
         _minecraftVersion = string.IsNullOrWhiteSpace(profile.MinecraftVersion) ? "auto" : profile.MinecraftVersion;
         _attackFilterModeIndex = Math.Clamp(profile.AttackFilterMode, 0, 2);
+
+        // 各功能参数跟随账号：从账号库回填（老库没有这些字段时保持默认值）
+        LoadParameters(profile);
 
         ConnectCommand = new AsyncRelayCommand(ConnectAsync, () => !IsConnected);
         DisconnectCommand = new RelayCommand(Disconnect, () => IsConnected);
@@ -60,15 +77,105 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
 
         _session.LogReceived += OnLogReceived;
         _session.StateChanged += OnStateChanged;
+        _session.DialogRequested += OnDialogRequested;
+        _session.DialogClosed += OnDialogClosed;
 
         if (_session is RunnerProcess runner)
             runner.ProcessExited += OnProcessExited;
 
-        // 默认的自动化参数先登记好，子进程拉起时会补发（见 RunnerProcess 的配置记账）
-        ApplyAttack();
-        ApplyMouse();
-        ApplyReconnect();
+        // 默认的自动化参数先登记好，子进程拉起时会补发（见 RunnerProcess 的配置记账）。
+        // 构造期回填：这几个调用不能触发"参数变化→写盘"，否则每个账号一创建就写一次账号库。
+        _applyingParameters = true;
+        try
+        {
+            ApplyAttack();
+            ApplyMouse();
+            ApplyFishing();
+            ApplyAutoRefill();
+            ApplyWalk();
+            ApplyServerFilter();
+            ApplyReconnect();
+        }
+        finally
+        {
+            _applyingParameters = false;
+        }
     }
+
+    /// <summary>构造期回填标记：挡住 <see cref="ParametersChanged"/>。</summary>
+    private bool _applyingParameters = true;
+
+    /// <summary>参数变化通知：构造期回填时静默，用户改动时才让外壳写回账号库。</summary>
+    private void NotifyParametersChanged()
+    {
+        if (_applyingParameters)
+            return;
+
+        ParametersChanged?.Invoke(this);
+    }
+
+    /// <summary>
+    /// 把账号库里存的各功能参数回填到面板字段（用户 2026-10-03 要求：参数跟随账号）。
+    /// 账号库里没有（老库 / 新账号）就保持类字段默认值；界面上的数值统一转成字符串。
+    /// </summary>
+    private void LoadParameters(AccountProfile profile)
+    {
+        if (profile.Attack is { } attack)
+        {
+            _attackRange = Num(attack.Range);
+            _attackCooldownMin = attack.CooldownMinMs.ToString(CultureInfo.InvariantCulture);
+            _attackCooldownMax = attack.CooldownMaxMs.ToString(CultureInfo.InvariantCulture);
+        }
+
+        if (profile.Mouse is { } mouse)
+        {
+            _mouseAimReach = mouse.AimReach;
+            _mouseLeftEnabled = mouse.Left.Enabled;
+            _mouseLeftModeIndex = (int)mouse.Left.Mode;
+            _mouseLeftHoldMs = mouse.Left.HoldMs.ToString(CultureInfo.InvariantCulture);
+            _mouseLeftIntervalMs = mouse.Left.IntervalMs.ToString(CultureInfo.InvariantCulture);
+            _mouseLeftJitterPercent = mouse.Left.JitterPercent.ToString(CultureInfo.InvariantCulture);
+            _mouseRightEnabled = mouse.Right.Enabled;
+            _mouseRightModeIndex = (int)mouse.Right.Mode;
+            _mouseRightHoldMs = mouse.Right.HoldMs.ToString(CultureInfo.InvariantCulture);
+            _mouseRightIntervalMs = mouse.Right.IntervalMs.ToString(CultureInfo.InvariantCulture);
+            _mouseRightJitterPercent = mouse.Right.JitterPercent.ToString(CultureInfo.InvariantCulture);
+        }
+
+        _fishingEnabled = profile.FishingEnabled;
+
+        if (profile.Fishing is { } fishing)
+        {
+            _fishingSoundDetection = fishing.SoundDetection;
+            _fishingVelocityDetection = fishing.VelocityDetection;
+            _fishingTimeout = Num(fishing.TimeoutSeconds);
+            _fishingCastDelay = Num(fishing.CastDelaySeconds);
+        }
+
+        _autoRefillEnabled = profile.AutoRefillEnabled;
+        _autoWalkEnabled = profile.AutoWalkEnabled;
+        _serverFilterModeIndex = Math.Clamp(profile.ServerFilterMode, 0, 4);
+
+        // 2026-10-05：只显示 / 只屏蔽 改成两份独立前缀。老账号库里只有一份
+        // （ServerFilterPrefix），两边都先继承它，用户之后改哪边就只动哪边。
+        string legacyPrefix = profile.ServerFilterPrefix ?? string.Empty;
+        _serverFilterShowPrefix = string.IsNullOrWhiteSpace(profile.ServerFilterShowPrefix) ? legacyPrefix : profile.ServerFilterShowPrefix;
+        _serverFilterBlockPrefix = string.IsNullOrWhiteSpace(profile.ServerFilterBlockPrefix) ? legacyPrefix : profile.ServerFilterBlockPrefix;
+
+        if (profile.Reconnect is { } reconnect)
+        {
+            _reconnectEnabled = reconnect.Enabled;
+            // 0 = 无限（默认）
+            _reconnectAttempts = reconnect.MaxAttempts.ToString(CultureInfo.InvariantCulture);
+            _reconnectDelayMs = reconnect.DelayMs.ToString(CultureInfo.InvariantCulture);
+        }
+
+        // 界面里"总开关关着"时，子开关保持账号里存的状态；应用一次让内存与账号库一致
+        _attackEnabled = false;
+        _mouseEnabled = false;
+    }
+
+    private static string Num(double value) => value.ToString("0.#", CultureInfo.InvariantCulture);
 
     /// <summary>
     /// 按候选生物目录生成本账号的过滤勾选列表（敌对 / 中立 / 友好各一份），
@@ -100,6 +207,15 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
     /// <summary>连接成功（子会话进入 Connected）：主 ViewModel 用它把最新参数写回加密账号库。</summary>
     public event Action<AccountViewModel>? Connected;
 
+    /// <summary>成功投递了一条命令/聊天：外壳据此自动记“常用命令”。</summary>
+    public event Action<AccountViewModel, string>? CommandSent;
+
+    /// <summary>服务器弹出了对话框（已切到 UI 线程）：界面据此弹一个输入框。</summary>
+    public event Action<AccountViewModel, MccDialogInfo>? DialogRequested;
+
+    /// <summary>服务器关闭了编号为该值的对话框（已切到 UI 线程）。</summary>
+    public event Action<AccountViewModel, int>? DialogClosed;
+
     public string Id => _profile.Id;
 
     /// <summary>列表标题：账号库里存的展示名，空则退回游戏名。</summary>
@@ -108,6 +224,25 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
 
     /// <summary>列表副标题，跟随面板里改过的服务器/端口。</summary>
     public string ServerSummary => $"{ServerHost}:{ServerPort}";
+
+    /// <summary>
+    /// 左侧列表"按服务器分组"时的分组键（2026-10-05 用户要求）。
+    ///
+    /// 判定标准只看服务器地址（域名或 IP），<b>端口不参与</b>：同一台机器的 25565 / 25566 等
+    /// 不同端口视为同一个服务器，组头就显示这个地址。大小写、空格、首尾点都归一化，
+    /// 免得 "MCIP.MCYYY.com" 和 "mcip.mcyyy.com" 被分成两组。
+    /// </summary>
+    public string GroupKey
+    {
+        get
+        {
+            string host = ServerHost?.Trim() ?? string.Empty;
+            if (host.Length == 0)
+                return "(未填服务器)";
+
+            return host.ToLowerInvariant().TrimStart('[').TrimEnd(']').TrimEnd('.');
+        }
+    }
 
     public ObservableCollection<LogEntry> Logs { get; } = [];
 
@@ -160,7 +295,15 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
     public string CommandInput
     {
         get => _commandInput;
-        set => SetProperty(ref _commandInput, value);
+        set
+        {
+            if (!SetProperty(ref _commandInput, value))
+                return;
+
+            // 程序自己回填历史条目时不动游标；用户手动改字 = 从头开始一条新命令
+            if (!_historyNavigating)
+                _commandHistoryIndex = _commandHistory.Count;
+        }
     }
 
     public string StateText
@@ -222,8 +365,27 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
 
     private bool _fishingEnabled;
 
+    // ---- 自动钓鱼参数（2026-10-04：收杆检测 / 抛竿超时 / 重抛间隔；默认值 = MCC 配置默认值）----
+    private bool _fishingSoundDetection = true;
+    private bool _fishingVelocityDetection = true;
+    private string _fishingTimeout = "300";
+    private string _fishingCastDelay = "0.4";
+
+    private bool _autoRefillEnabled;
+
+    /// <summary>自动行走开关（2026-10-04 需求：一直朝当前朝向前进）。</summary>
+    private bool _autoWalkEnabled;
+
+    // ---- 服务器信息过滤（2026-10-04 需求：全屏蔽 / 只屏蔽玩家消息 / 只显示指定前缀 / 只屏蔽指定前缀）----
+    private int _serverFilterModeIndex;
+    /// <summary>"只显示指定前缀"用的前缀列表（与下面那份相互独立，2026-10-05）。</summary>
+    private string _serverFilterShowPrefix = string.Empty;
+
+    /// <summary>"只屏蔽指定前缀"用的前缀列表。</summary>
+    private string _serverFilterBlockPrefix = string.Empty;
+
     private bool _reconnectEnabled = true;
-    private string _reconnectAttempts = "5";
+    private string _reconnectAttempts = "0";
     private string _reconnectDelayMs = "3000";
 
     /// <summary>自动砍怪开关。</summary>
@@ -310,10 +472,7 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
         set
         {
             if (SetProperty(ref _attackFilterModeIndex, value))
-            {
-                ApplyAttack();
-                AttackFilterChanged?.Invoke(this);
-            }
+                ApplyAttack(); // 过滤模式也是参数的一部分，ApplyAttack 会顺带通知落盘
         }
     }
 
@@ -321,10 +480,16 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
     public IReadOnlyList<string> SelectedAttackMobs =>
         _attackFilterItems.Where(static item => item.IsChecked).Select(static item => item.Key).ToArray();
 
-    /// <summary>过滤设置变了（UI 线程触发）：外壳用它把设置写回加密账号库。</summary>
-    public event Action<AccountViewModel>? AttackFilterChanged;
+    /// <summary>
+    /// 任一功能参数变了（UI 线程触发）：外壳用它把参数写回加密账号库
+    /// （用户 2026-10-03 要求：参数必须跟随账号存取）。
+    /// <para>构造期回填参数时不会触发（<see cref="_applyingParameters"/> 挡住）。</para>
+    /// <para>攻击过滤也走这里：它是 <see cref="AccountProfile.Attack"/> 的一部分，不再单独发事件，
+    /// 否则一次勾选会触发两次落盘。</para>
+    /// </summary>
+    public event Action<AccountViewModel>? ParametersChanged;
 
-    /// <summary>某个生物被勾/取消：重新下发攻击参数并写回账号库。</summary>
+    /// <summary>某个生物被勾/取消：重新下发攻击参数（同时触发参数落盘）。</summary>
     private void OnAttackFilterChanged()
     {
         // 整类勾选进行中（全选框）：单项回调先不处理，结束时统一下发一次
@@ -332,7 +497,6 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
             return;
 
         ApplyAttack();
-        AttackFilterChanged?.Invoke(this);
         RaiseCategoryAllCheckedChanged();
     }
 
@@ -544,9 +708,136 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
         set
         {
             if (SetProperty(ref _fishingEnabled, value))
-                _session.ConfigureFishing(value);
+                ApplyFishing();
         }
     }
+
+    /// <summary>收杆检测·水花声音（MCC Enable_Sound_Detection，默认开）。</summary>
+    public bool FishingSoundDetection
+    {
+        get => _fishingSoundDetection;
+        set
+        {
+            if (SetProperty(ref _fishingSoundDetection, value))
+                ApplyFishing();
+        }
+    }
+
+    /// <summary>收杆检测·浮漂实体速度包（MCC Enable_Velocity_Detection，默认开）。</summary>
+    public bool FishingVelocityDetection
+    {
+        get => _fishingVelocityDetection;
+        set
+        {
+            if (SetProperty(ref _fishingVelocityDetection, value))
+                ApplyFishing();
+        }
+    }
+
+    /// <summary>抛竿超时（秒）：多久没咬钩算超时并重新抛竿（MCC Fishing_Timeout，默认 300）。</summary>
+    public string FishingTimeout
+    {
+        get => _fishingTimeout;
+        set
+        {
+            if (SetProperty(ref _fishingTimeout, value))
+                ApplyFishing();
+        }
+    }
+
+    /// <summary>重抛间隔（秒）：收杆/超时后隔多久重新抛竿（MCC Cast_Delay，默认 0.4）。</summary>
+    public string FishingCastDelay
+    {
+        get => _fishingCastDelay;
+        set
+        {
+            if (SetProperty(ref _fishingCastDelay, value))
+                ApplyFishing();
+        }
+    }
+
+    /// <summary>自动补充开关：手持用完/损坏时从背包补同款（2026-10-03 第五批需求）。</summary>
+    public bool AutoRefillEnabled
+    {
+        get => _autoRefillEnabled;
+        set
+        {
+            if (SetProperty(ref _autoRefillEnabled, value))
+            {
+                _session.ConfigureAutoRefill(value);
+                NotifyParametersChanged();
+            }
+        }
+    }
+
+    /// <summary>自动行走开关：一直朝当前朝向前进（2026-10-04 需求，没有参数）。</summary>
+    public bool AutoWalkEnabled
+    {
+        get => _autoWalkEnabled;
+        set
+        {
+            if (SetProperty(ref _autoWalkEnabled, value))
+            {
+                _session.ConfigureWalk(value);
+                NotifyParametersChanged();
+            }
+        }
+    }
+
+    /// <summary>
+    /// 服务器信息过滤模式（2026-10-04 需求）：0 不过滤 / 1 全屏蔽 / 2 只屏蔽玩家消息 / 3 只显示指定前缀 / 4 只屏蔽指定前缀。
+    /// 改了立刻下发——已连接的会话把过滤器即时改掉，不用重连。
+    /// </summary>
+    public int ServerFilterModeIndex
+    {
+        get => _serverFilterModeIndex;
+        set
+        {
+            if (SetProperty(ref _serverFilterModeIndex, value))
+            {
+                PushServerFilter();
+                NotifyParametersChanged();
+            }
+        }
+    }
+
+    /// <summary>
+    /// "只显示指定前缀"模式的前缀列表。改动立刻下发（已连接时会话里即时生效，不用重连）。
+    /// 与 <see cref="ServerFilterBlockPrefix"/> <b>各存各的</b>（2026-10-05 用户要求）。
+    /// </summary>
+    public string ServerFilterShowPrefix
+    {
+        get => _serverFilterShowPrefix;
+        set
+        {
+            if (SetProperty(ref _serverFilterShowPrefix, value ?? string.Empty))
+            {
+                PushServerFilter();
+                NotifyParametersChanged();
+            }
+        }
+    }
+
+    /// <summary>"只屏蔽指定前缀"模式的前缀列表（与 <see cref="ServerFilterShowPrefix"/> 相互独立）。</summary>
+    public string ServerFilterBlockPrefix
+    {
+        get => _serverFilterBlockPrefix;
+        set
+        {
+            if (SetProperty(ref _serverFilterBlockPrefix, value ?? string.Empty))
+            {
+                PushServerFilter();
+                NotifyParametersChanged();
+            }
+        }
+    }
+
+    /// <summary>把"模式 + 两份前缀"一次性推给会话。</summary>
+    private void PushServerFilter() =>
+        _session.ConfigureServerFilter(
+            (ServerFilterMode)_serverFilterModeIndex,
+            _serverFilterShowPrefix,
+            _serverFilterBlockPrefix);
 
     /// <summary>断线自动重连开关。</summary>
     public bool ReconnectEnabled
@@ -559,14 +850,17 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
 
             ApplyReconnect();
 
+            // 次数 0 = 无限重连（默认），日志口径跟界面提示保持一致
+            int attempts = ParseInt(_reconnectAttempts, 0, 0, 9999);
+            string limitText = attempts <= 0 ? "无限次" : $"{attempts} 次";
             AppendLog(value
-                ? $"§8自动重连已开启：最多 {ParseInt(_reconnectAttempts, 5, 1, 50)} 次，"
+                ? $"§8自动重连已开启：{limitText}，"
                   + $"间隔约 {ParseInt(_reconnectDelayMs, 3000, 500, 300_000) / 1000.0:0.#} 秒（含随机抖动）。"
                 : "§8自动重连已关闭。");
         }
     }
 
-    /// <summary>最大重连次数。</summary>
+    /// <summary>最大重连次数；0 = 无限重连（默认）。</summary>
     public string ReconnectAttempts
     {
         get => _reconnectAttempts;
@@ -588,7 +882,8 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
         }
     }
 
-    private void ApplyAttack() =>
+    private void ApplyAttack()
+    {
         _session.ConfigureAttack(AttackEnabled, new AttackOptions
         {
             Range = ParseDouble(AttackRange, 3.0, 1.0, 4.0),
@@ -598,7 +893,39 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
             Mobs = SelectedAttackMobs,
         });
 
-    private void ApplyMouse() =>
+        NotifyParametersChanged();
+    }
+
+    /// <summary>构造期/参数回填用：把当前自动补充开关下发给会话（不触发落盘时由调用方兜住）。</summary>
+    private void ApplyAutoRefill()
+    {
+        _session.ConfigureAutoRefill(_autoRefillEnabled);
+        NotifyParametersChanged();
+    }
+
+    /// <summary>构造期/参数回填用：把当前自动行走开关下发给会话（不触发落盘时由调用方兜住）。</summary>
+    private void ApplyWalk()
+    {
+        _session.ConfigureWalk(_autoWalkEnabled);
+        NotifyParametersChanged();
+    }
+
+    /// <summary>构造期/参数回填用：把过滤模式 + 两份前缀下发给会话。</summary>
+    private void ApplyServerFilter()
+    {
+        _session.ConfigureServerFilter((ServerFilterMode)_serverFilterModeIndex, _serverFilterShowPrefix, _serverFilterBlockPrefix);
+        NotifyParametersChanged();
+    }
+
+    /// <summary>把当前自动钓鱼开关 + 参数下发给会话（构造期回填与用户改动共用）。</summary>
+    private void ApplyFishing()
+    {
+        _session.ConfigureFishing(_fishingEnabled, BuildFishingOptions());
+        NotifyParametersChanged();
+    }
+
+    private void ApplyMouse()
+    {
         _session.ConfigureMouse(MouseEnabled, new MouseOptions
         {
             Left = new MouseButtonOptions
@@ -620,13 +947,36 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
             AimReach = Math.Clamp(MouseAimReach, 1, 7),
         });
 
-    private void ApplyReconnect() =>
+        NotifyParametersChanged();
+    }
+
+    private void ApplyReconnect()
+    {
         _session.ConfigureReconnect(new ReconnectOptions
         {
             Enabled = ReconnectEnabled,
-            MaxAttempts = ParseInt(ReconnectAttempts, 5, 1, 50),
+            // 0 = 无限重连（默认）；非法/留空也退回 0
+            MaxAttempts = ParseInt(ReconnectAttempts, 0, 0, 9999),
             DelayMs = ParseInt(ReconnectDelayMs, 3000, 500, 300_000),
         });
+
+        NotifyParametersChanged();
+    }
+
+    /// <summary>
+    /// 视角移动（需求 4）：点"向东/抬头看天"这类按钮 → 立刻把视角转过去，一次性生效。
+    /// 没连接时先在这里拦一道，给一句能看懂的提示（而不是等子进程回话）。
+    /// </summary>
+    public void LookAt(MccLookDirection direction)
+    {
+        if (!IsConnected)
+        {
+            AppendLog("§e视角移动需要先进服（当前未连接）。");
+            return;
+        }
+
+        _session.LookAt(direction);
+    }
 
     /// <summary>解析输入框：非法或留空时退回默认值，并把结果限制在合理区间。</summary>
     private static int ParseInt(string? text, int fallback, int min, int max)
@@ -740,9 +1090,132 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
         if (!_session.SendInput(text))
             return;
 
-        AppendLog($"§7> {text.Trim()}");
-        CommandInput = string.Empty;
+        string trimmed = text.Trim();
+        AppendLog($"§7> {trimmed}");
+
+        PushCommandHistory(trimmed);
+
+        // 清空输入框是程序行为，别让输入框的 setter 把历史游标带跑
+        _historyNavigating = true;
+        try
+        {
+            CommandInput = string.Empty;
+        }
+        finally
+        {
+            _historyNavigating = false;
+        }
+
+        CommandSent?.Invoke(this, trimmed);
     }
+
+    /// <summary>命令输入历史上限（条）。</summary>
+    private const int MaxCommandHistory = 100;
+
+    /// <summary>把刚发出的命令记进历史：连续重复不堆两条，超上限丢最早的。</summary>
+    private void PushCommandHistory(string text)
+    {
+        if (_commandHistory.Count == 0 || !string.Equals(_commandHistory[^1], text, StringComparison.Ordinal))
+            _commandHistory.Add(text);
+
+        if (_commandHistory.Count > MaxCommandHistory)
+            _commandHistory.RemoveRange(0, _commandHistory.Count - MaxCommandHistory);
+
+        _commandHistoryIndex = _commandHistory.Count;
+        _historyDraft = string.Empty;
+    }
+
+    /// <summary>上方向键：回翻一条历史。返回 false 表示没历史可翻（让默认按键行为继续）。</summary>
+    public bool HistoryPrev()
+    {
+        if (_commandHistory.Count == 0)
+            return false;
+
+        // 从"最末尾"开始翻：先把正在打的半截存起来，翻到底原样还回去
+        if (_commandHistoryIndex >= _commandHistory.Count)
+            _historyDraft = _commandInput;
+
+        if (_commandHistoryIndex == 0)
+            return true; // 已经是最早一条：停住并吞掉按键（免得光标跳到行首）
+
+        _commandHistoryIndex--;
+        SetHistoryText(_commandHistory[_commandHistoryIndex]);
+        return true;
+    }
+
+    /// <summary>下方向键：往下翻一条；翻过最新一条时恢复开始翻之前打了一半的内容。</summary>
+    public bool HistoryNext()
+    {
+        if (_commandHistoryIndex >= _commandHistory.Count)
+            return false;
+
+        _commandHistoryIndex++;
+        SetHistoryText(_commandHistoryIndex >= _commandHistory.Count
+            ? _historyDraft
+            : _commandHistory[_commandHistoryIndex]);
+        return true;
+    }
+
+    /// <summary>程序回填历史条目：期间输入框的 setter 不重置历史游标。</summary>
+    private void SetHistoryText(string text)
+    {
+        _historyNavigating = true;
+        try
+        {
+            CommandInput = text;
+        }
+        finally
+        {
+            _historyNavigating = false;
+        }
+    }
+
+    #region 服务器对话框（密码用界面输入框填）
+
+    private MccDialogInfo? _pendingDialog;
+
+    /// <summary>服务器弹了对话框但当前账号没被选中时先存这儿，切过来再弹。</summary>
+    public MccDialogInfo? PendingDialog => _pendingDialog;
+
+    /// <summary>把界面填好的取值写回会话并点动作（密码不进日志、不进聊天）。返回是否成功。</summary>
+    public bool SubmitDialog(IReadOnlyDictionary<string, string> values, int actionIndex)
+    {
+        try
+        {
+            return _session.SubmitDialog(values, actionIndex);
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"§c提交对话框失败：{ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>取消服务器弹出的对话框（关输入窗兜底用）。</summary>
+    public bool CancelDialog()
+    {
+        try
+        {
+            return _session.CancelDialog();
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"§c取消对话框失败：{ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>界面关掉输入窗后调用：把对应编号的未处理对话框清掉（防止换账号又弹一次旧的）。</summary>
+    public void ClearPendingDialog(int revision)
+    {
+        if (_pendingDialog is { } pending && pending.Revision == revision)
+        {
+            _pendingDialog = null;
+            OnPropertyChanged(nameof(PendingDialog));
+        }
+    }
+
+    #endregion
 
     private void ClearLog() => Logs.Clear();
 
@@ -798,10 +1271,72 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
             DisplayName = DisplayName,
             AttackFilterMode = Math.Clamp(AttackFilterModeIndex, 0, 2),
             AttackFilterMobs = [.. SelectedAttackMobs],
+
+            // 各功能参数随账号存取（用户 2026-10-03 要求）
+            Attack = BuildAttackOptions(),
+            Mouse = BuildMouseOptions(),
+            FishingEnabled = _fishingEnabled,
+            Fishing = BuildFishingOptions(),
+            AutoRefillEnabled = _autoRefillEnabled,
+            AutoWalkEnabled = _autoWalkEnabled,
+            ServerFilterMode = Math.Clamp(_serverFilterModeIndex, 0, 4),
+            ServerFilterShowPrefix = _serverFilterShowPrefix,
+            ServerFilterBlockPrefix = _serverFilterBlockPrefix,
+            Reconnect = BuildReconnectOptions(),
+
             CreatedAt = _profile.CreatedAt,
             LastUsedAt = DateTimeOffset.Now,
         };
     }
+
+    /// <summary>当前面板上的砍怪参数（与下发给子进程的是同一套换算）。</summary>
+    private AttackOptions BuildAttackOptions() => new()
+    {
+        Range = ParseDouble(AttackRange, 3.0, 1.0, 4.0),
+        CooldownMinMs = ParseInt(AttackCooldownMin, 800, 50, 60_000),
+        CooldownMaxMs = ParseInt(AttackCooldownMax, 1600, 50, 60_000),
+        FilterMode = (MobFilterMode)Math.Clamp(AttackFilterModeIndex, 0, 2),
+        Mobs = SelectedAttackMobs,
+    };
+
+    /// <summary>当前面板上的鼠标参数。</summary>
+    private MouseOptions BuildMouseOptions() => new()
+    {
+        Left = new MouseButtonOptions
+        {
+            Enabled = MouseLeftEnabled,
+            Mode = (MouseMode)Math.Clamp(MouseLeftModeIndex, 0, 2),
+            HoldMs = ParseInt(MouseLeftHoldMs, 1000, 50, 60_000),
+            IntervalMs = ParseInt(MouseLeftIntervalMs, 600, 50, 60_000),
+            JitterPercent = ParseInt(MouseLeftJitterPercent, 20, 0, 90),
+        },
+        Right = new MouseButtonOptions
+        {
+            Enabled = MouseRightEnabled,
+            Mode = (MouseMode)Math.Clamp(MouseRightModeIndex, 0, 2),
+            HoldMs = ParseInt(MouseRightHoldMs, 1000, 50, 60_000),
+            IntervalMs = ParseInt(MouseRightIntervalMs, 600, 50, 60_000),
+            JitterPercent = ParseInt(MouseRightJitterPercent, 20, 0, 90),
+        },
+        AimReach = Math.Clamp(MouseAimReach, 1, 7),
+    };
+
+    /// <summary>当前面板上的重连参数（0 = 无限）。</summary>
+    private ReconnectOptions BuildReconnectOptions() => new()
+    {
+        Enabled = ReconnectEnabled,
+        MaxAttempts = ParseInt(ReconnectAttempts, 0, 0, 9999),
+        DelayMs = ParseInt(ReconnectDelayMs, 3000, 500, 300_000),
+    };
+
+    /// <summary>当前面板上的自动钓鱼参数（非法/留空退回 MCC 默认值）。</summary>
+    private FishingOptions BuildFishingOptions() => new()
+    {
+        SoundDetection = _fishingSoundDetection,
+        VelocityDetection = _fishingVelocityDetection,
+        TimeoutSeconds = ParseDouble(_fishingTimeout, 300.0, 5.0, 86_400.0),
+        CastDelaySeconds = ParseDouble(_fishingCastDelay, 0.4, 0.0, 60.0),
+    };
 
     #endregion
 
@@ -828,6 +1363,31 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
 
             if (state == MCCConnectionState.Connected)
                 Connected?.Invoke(this);
+        });
+    }
+
+    private void OnDialogRequested(MccDialogInfo info)
+    {
+        // 会话线程 / 子进程管道线程 → UI 线程
+        _dispatcherQueue.TryEnqueue(() =>
+        {
+            _pendingDialog = info;
+            OnPropertyChanged(nameof(PendingDialog));
+            DialogRequested?.Invoke(this, info);
+        });
+    }
+
+    private void OnDialogClosed(int revision)
+    {
+        _dispatcherQueue.TryEnqueue(() =>
+        {
+            if (_pendingDialog is { } pending && pending.Revision == revision)
+            {
+                _pendingDialog = null;
+                OnPropertyChanged(nameof(PendingDialog));
+            }
+
+            DialogClosed?.Invoke(this, revision);
         });
     }
 
@@ -875,6 +1435,8 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
         _disposed = true;
         _session.LogReceived -= OnLogReceived;
         _session.StateChanged -= OnStateChanged;
+        _session.DialogRequested -= OnDialogRequested;
+        _session.DialogClosed -= OnDialogClosed;
 
         if (_session is RunnerProcess runner)
             runner.ProcessExited -= OnProcessExited;

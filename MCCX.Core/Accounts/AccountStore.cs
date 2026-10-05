@@ -1,4 +1,3 @@
-using System.Runtime.Versioning;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -10,13 +9,14 @@ namespace MCCX.Core;
 /// 账号列表以 JSON 组织，用随机生成的 AES-256-GCM 密钥加密后落盘；
 /// 该密钥本身用 Windows DPAPI（当前用户）保护，因此只有本机本账号能解密。
 ///
-/// 文件布局（默认在 exe 同目录；旧版本用 %APPDATA%\MCCX\，即改名前的 MccX）：
+/// 文件布局（优先 exe 同目录，保证"绿色便携"；该目录不可写时退到
+/// %LOCALAPPDATA%\MCCX；旧版本用 %APPDATA%\MCCX\，即改名前的 MccX）：
 ///   accounts.key  DPAPI 保护后的 32 字节 AES 密钥
 ///   accounts.dat  [1B 版本][12B nonce][16B tag][密文]
 ///
 /// 原子写入：先写 .tmp 再整体替换，避免断电产生半截文件。
 /// </summary>
-[SupportedOSPlatform("windows")]
+[System.Runtime.Versioning.SupportedOSPlatform("windows")]
 public sealed class AccountStore : IDisposable
 {
     private const byte FormatVersion = 1;
@@ -59,12 +59,73 @@ public sealed class AccountStore : IDisposable
             MigrateLegacyDataIfAbsent();
     }
 
-    /// <summary>默认存储目录：程序（exe）所在目录，与程序同路径；不存在则创建。</summary>
-    public static string DefaultDirectory =>
-        AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    /// <summary>默认存储目录：exe 所在目录；不可写时退到 %LOCALAPPDATA%\MCCX。</summary>
+    public static string DefaultDirectory { get; } = ResolveDefaultDirectory();
+
+    /// <summary>%LOCALAPPDATA%\MCCX（exe 目录不可写时的备用位置；也是旧版迁移的来源之一）。</summary>
+    public static string FallbackDirectory { get; } = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MCCX");
+
+    /// <summary>true 表示 exe 目录不可写，账号库实际落在 <see cref="FallbackDirectory"/>。</summary>
+    public static bool UsingFallbackDirectory =>
+        !string.Equals(DefaultDirectory, AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), StringComparison.OrdinalIgnoreCase);
 
     /// <summary>本次启动是否把旧的 %APPDATA%\MCCX 账号文件搬到了程序目录。</summary>
     public bool MigratedLegacyData { get; private set; }
+
+    /// <summary>
+    /// 本实例实际使用的账号库目录（默认位置时即 <see cref="DefaultDirectory"/>）。
+    /// 名字刻意不叫 Directory：那会遮蔽 <see cref="System.IO.Directory"/>，
+    /// 让本类里所有 Directory.CreateDirectory/Exists 都编不过。
+    /// </summary>
+    public string StorageDirectory => _directory;
+
+    /// <summary>
+    /// exe 目录能写就用它（保持"整个文件夹拷走就能用"的便携语义）；
+    /// 只读位置（装到 Program Files、解压到受限目录）不能写就退到
+    /// %LOCALAPPDATA%\MCCX，避免"加了账号、一重启就没了"。
+    /// </summary>
+    private static string ResolveDefaultDirectory()
+    {
+        string exeDirectory = AppContext.BaseDirectory.TrimEnd(
+            Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+        if (IsWritable(exeDirectory))
+            return exeDirectory;
+
+        try
+        {
+            Directory.CreateDirectory(FallbackDirectory);
+            if (IsWritable(FallbackDirectory))
+                return FallbackDirectory;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            // 两个位置都不行：仍返回 exe 目录，让 Load/Persist 把真实错误写进 LastError
+            _ = ex;
+        }
+
+        return exeDirectory;
+    }
+
+    /// <summary>写一个探针文件验证目录可写（比只看目录是否存在可靠：只读目录也存在）。</summary>
+    private static bool IsWritable(string directory)
+    {
+        try
+        {
+            Directory.CreateDirectory(directory);
+            string probe = Path.Combine(directory, ".mccx-writetest");
+            // 用显式 new byte[0] 而不是集合表达式 []：[] 在这里推不出目标类型（CS9174）。
+            File.WriteAllBytes(probe, new byte[0]);
+            File.Delete(probe);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            _ = ex;
+            return false;
+        }
+    }
 
     private void EnsureDirectoryExists()
     {
@@ -196,15 +257,16 @@ public sealed class AccountStore : IDisposable
             }
             else if (!ReferenceEquals(existing, profile))
             {
-                existing.Username = profile.Username;
-                existing.ServerHost = profile.ServerHost;
-                existing.Port = profile.Port;
-                existing.MinecraftVersion = profile.MinecraftVersion;
-                existing.DisplayName = profile.DisplayName;
-                existing.Credential = profile.Credential;
-                existing.AttackFilterMode = profile.AttackFilterMode;
-                existing.AttackFilterMobs = profile.AttackFilterMobs;
-                existing.LastUsedAt = profile.LastUsedAt;
+                // 字段拷贝集中在 AccountProfile.CopyFrom（一处列全，避免新增字段漏合并）；
+                // LastYaw/LastPitch 是进服恢复功能的历史遗留字段（功能已移除），这里保留库里的旧值。
+                float? lastYaw = existing.LastYaw;
+                float? lastPitch = existing.LastPitch;
+
+                existing.CopyFrom(profile);
+
+                existing.LastYaw = lastYaw;
+                existing.LastPitch = lastPitch;
+
                 profile = existing;
             }
 
@@ -249,6 +311,32 @@ public sealed class AccountStore : IDisposable
 
             account.AttackFilterMode = mode;
             account.AttackFilterMobs = [.. mobs];
+            PersistLocked();
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// 只更新一个账号的"上次视角"并落盘。不碰 LastUsedAt（不改变左侧列表顺序）。
+    /// 调用方是界面层：连接前它会把子进程 Bot 写下的最新视角并回账号库，
+    /// 这样"视角跟随账号"与其他参数保持一致。
+    /// </summary>
+    /// <returns>是否命中该账号。</returns>
+    public bool UpdateLastView(string id, float? yaw, float? pitch)
+    {
+        if (yaw is null || pitch is null)
+            return false;
+
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+
+            AccountProfile? account = _accounts.FirstOrDefault(a => a.Id == id);
+            if (account is null)
+                return false;
+
+            account.LastYaw = yaw;
+            account.LastPitch = pitch;
             PersistLocked();
             return true;
         }

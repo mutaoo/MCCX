@@ -1,5 +1,6 @@
 using System.IO.Pipes;
 using System.Text;
+using MCCX.Core.Dialogs;
 
 namespace MCCX.Core.Ipc;
 
@@ -14,10 +15,10 @@ namespace MCCX.Core.Ipc;
 /// </summary>
 public static class RunnerHost
 {
-    /// <summary>进程入口。返回值作为进程退出码。</summary>
-    public static int Run(string? cmdHandle, string? evtHandle)
+    /// <summary>进程入口。返回值作为进程退出码。<paramref name="accountId"/> 用于按账号存取视角记录。</summary>
+    public static int Run(string? cmdHandle, string? evtHandle, string? accountId = null)
     {
-        int rc = RunCore(cmdHandle, evtHandle);
+        int rc = RunCore(cmdHandle, evtHandle, accountId);
 
         // MCC 会话会在前台线程上留尾巴（如连接超时检测线程：Thread.Sleep 15 秒醒一次才检查取消标记），
         // 正常 return 会让 CLR 一直等这个前台线程结束，子进程迟迟不退、父进程白等 3 秒超时后才 Kill。
@@ -26,7 +27,7 @@ public static class RunnerHost
         return rc; // 到不了这里
     }
 
-    private static int RunCore(string? cmdHandle, string? evtHandle)
+    private static int RunCore(string? cmdHandle, string? evtHandle, string? accountId)
     {
         if (string.IsNullOrEmpty(cmdHandle) || string.IsNullOrEmpty(evtHandle))
             return 2;
@@ -56,10 +57,12 @@ public static class RunnerHost
             // 与主程序完全一致的一次性初始化（只改内存配置，不写 .ini）
             MCCRuntime.Initialize();
 
-            session = new MCCSession();
+            session = new MCCSession(accountId);
             session.LogReceived += text => writer.Emit(RunnerMessage.EvtLog, text);
             session.StateChanged += state => writer.Emit(RunnerMessage.EvtState, state.ToString());
             session.GameJoined += () => writer.Emit(RunnerMessage.EvtJoined);
+            session.DialogRequested += info => writer.Emit(RunnerMessage.EvtDialog, info.ToJson());
+            session.DialogClosed += revision => writer.Emit(RunnerMessage.EvtDialogEnd, revision.ToString());
         }
         catch (Exception ex)
         {
@@ -128,6 +131,15 @@ public static class RunnerHost
                 session.SendInput(message.Text ?? string.Empty);
                 break;
 
+            case RunnerMessage.CmdDialog:
+                if (MccDialogSubmit.Parse(message.Text) is { } submit)
+                    session.SubmitDialog(submit.Values, submit.ActionIndex);
+                break;
+
+            case RunnerMessage.CmdDialogCancel:
+                session.CancelDialog();
+                break;
+
             case RunnerMessage.CmdAttack:
                 session.ConfigureAttack(message.On, new AttackOptions
                 {
@@ -164,7 +176,28 @@ public static class RunnerHost
                 break;
 
             case RunnerMessage.CmdFishing:
-                session.ConfigureFishing(message.On);
+                session.ConfigureFishing(message.On, new FishingOptions
+                {
+                    SoundDetection = message.FishingSound,
+                    VelocityDetection = message.FishingVelocity,
+                    TimeoutSeconds = message.FishingTimeout,
+                    CastDelaySeconds = message.FishingCastDelay,
+                });
+                break;
+
+            case RunnerMessage.CmdAutoRefill:
+                session.ConfigureAutoRefill(message.On);
+                break;
+
+            case RunnerMessage.CmdWalk:
+                session.ConfigureWalk(message.On);
+                break;
+
+            case RunnerMessage.CmdMsgFilter:
+                session.ConfigureServerFilter(
+                    (ServerFilterMode)Math.Clamp(message.ServerFilterMode, 0, (int)ServerFilterMode.BlockPrefix),
+                    message.ServerFilterShowPrefix,
+                    message.ServerFilterBlockPrefix);
                 break;
 
             case RunnerMessage.CmdReconnect:
@@ -174,6 +207,10 @@ public static class RunnerHost
                     MaxAttempts = message.Attempts,
                     DelayMs = message.DelayMs,
                 });
+                break;
+
+            case RunnerMessage.CmdLook:
+                session.LookAt((MccLookDirection)Math.Clamp(message.Direction, 0, 5));
                 break;
 
             default:

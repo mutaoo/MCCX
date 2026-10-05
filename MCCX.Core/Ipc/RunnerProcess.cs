@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO.Pipes;
 using System.Text;
+using MCCX.Core.Dialogs;
 
 namespace MCCX.Core.Ipc;
 
@@ -24,6 +25,7 @@ public sealed class RunnerProcess : IAccountSession
     private const int ExitWaitMs = 3000;
 
     private readonly string _exePath;
+    private readonly string _accountId;
     private readonly object _gate = new();
     private readonly object _writeGate = new();
 
@@ -41,11 +43,13 @@ public sealed class RunnerProcess : IAccountSession
     private TaskCompletionSource<MCCConnectionState>? _connectTcs;
 
     /// <summary>exePath 留空时用当前进程（界面里就是 MCCX.exe 自己）。</summary>
-    public RunnerProcess(string? exePath = null)
+    /// <param name="accountId">账号 Id：透传给子进程，用于按账号存取视角记录（需求 1）。</param>
+    public RunnerProcess(string? exePath = null, string? accountId = null)
     {
         _exePath = exePath
             ?? Environment.ProcessPath
             ?? throw new InvalidOperationException("无法确定当前程序路径，不能启动多开子进程。");
+        _accountId = accountId ?? string.Empty;
     }
 
     public event Action<string>? LogReceived;
@@ -53,6 +57,12 @@ public sealed class RunnerProcess : IAccountSession
     public event Action<MCCConnectionState>? StateChanged;
 
     public event Action? GameJoined;
+
+    /// <summary>服务器弹出了对话框（子进程推过来的）。可能从事件管道线程触发。</summary>
+    public event Action<MccDialogInfo>? DialogRequested;
+
+    /// <summary>服务器关闭了编号为该值的对话框。</summary>
+    public event Action<int>? DialogClosed;
 
     /// <summary>子进程退出（含崩溃）。参数是进程退出码，取不到时为 -1。</summary>
     public event Action<int>? ProcessExited;
@@ -134,6 +144,13 @@ public sealed class RunnerProcess : IAccountSession
         psi.ArgumentList.Add(cmdPipe.GetClientHandleAsString());
         psi.ArgumentList.Add("--evt");
         psi.ArgumentList.Add(evtPipe.GetClientHandleAsString());
+
+        // 账号 Id 透传给子进程：视角记录按账号落盘（业务参数一律走这里，不写 .ini）
+        if (_accountId.Length > 0)
+        {
+            psi.ArgumentList.Add("--account");
+            psi.ArgumentList.Add(_accountId);
+        }
 
         Process process;
         try
@@ -264,6 +281,16 @@ public sealed class RunnerProcess : IAccountSession
 
             case RunnerMessage.EvtError:
                 LogReceived?.Invoke($"§c{message.Text}");
+                break;
+
+            case RunnerMessage.EvtDialog:
+                if (MccDialogInfo.Parse(message.Text) is { } dialog)
+                    DialogRequested?.Invoke(dialog);
+                break;
+
+            case RunnerMessage.EvtDialogEnd:
+                if (int.TryParse(message.Text, out int revision))
+                    DialogClosed?.Invoke(revision);
                 break;
 
             case RunnerMessage.EvtReady:
@@ -498,8 +525,39 @@ public sealed class RunnerProcess : IAccountSession
         });
     }
 
-    public void ConfigureFishing(bool enabled) =>
-        SendOrConfig(new RunnerMessage { Type = RunnerMessage.CmdFishing, On = enabled });
+    public void ConfigureFishing(bool enabled, FishingOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        SendOrConfig(new RunnerMessage
+        {
+            Type = RunnerMessage.CmdFishing,
+            On = enabled,
+            FishingSound = options.SoundDetection,
+            FishingVelocity = options.VelocityDetection,
+            FishingTimeout = options.TimeoutSeconds,
+            FishingCastDelay = options.CastDelaySeconds,
+        });
+    }
+
+    public void ConfigureAutoRefill(bool enabled) =>
+        SendOrConfig(new RunnerMessage { Type = RunnerMessage.CmdAutoRefill, On = enabled });
+
+    /// <summary>自动行走（2026-10-04 需求）：一直朝当前朝向前进，没有参数，只有开关。</summary>
+    public void ConfigureWalk(bool enabled) =>
+        SendOrConfig(new RunnerMessage { Type = RunnerMessage.CmdWalk, On = enabled });
+
+    /// <summary>
+    /// 服务器信息过滤（2026-10-04 需求）：模式 + 两份前缀随账号下发，连接中/已连接都生效。
+    /// 两份前缀相互独立："只显示"用 showPrefix，"只屏蔽"用 blockPrefix（2026-10-05 用户要求）。
+    /// </summary>
+    public void ConfigureServerFilter(ServerFilterMode mode, string showPrefix, string blockPrefix) =>
+        SendOrConfig(new RunnerMessage
+        {
+            Type = RunnerMessage.CmdMsgFilter,
+            ServerFilterMode = (int)mode,
+            ServerFilterShowPrefix = showPrefix ?? string.Empty,
+            ServerFilterBlockPrefix = blockPrefix ?? string.Empty,
+        });
 
     public void ConfigureReconnect(ReconnectOptions options)
     {
@@ -512,6 +570,99 @@ public sealed class RunnerProcess : IAccountSession
             DelayMs = options.DelayMs,
             JitterPercent = options.JitterPercent,
         });
+    }
+
+    /// <summary>
+    /// 视角移动（需求 4）：一次性命令（不是配置，不记账补发——进程没起来时点了也没意义）。
+    /// </summary>
+    public void LookAt(MccLookDirection direction)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        if (State != MCCConnectionState.Connected)
+        {
+            LogReceived?.Invoke("§e视角移动需要先进服（当前还没连接）。");
+            return;
+        }
+
+        try
+        {
+            SendOrThrow(new RunnerMessage
+            {
+                Type = RunnerMessage.CmdLook,
+                Direction = (int)direction,
+            });
+        }
+        catch (Exception ex)
+        {
+            LogReceived?.Invoke($"§c视角移动失败：{ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 把界面填好的对话框取值交给子进程回写 MCC。密码等敏感取值只在这条管道里走，
+    /// 不经过聊天框、也不写日志。
+    /// </summary>
+    public bool SubmitDialog(IReadOnlyDictionary<string, string> values, int actionIndex)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(values);
+
+        bool running;
+        lock (_gate)
+        {
+            // 只要求子进程活着：对话框可能在"已连接"判定之前就弹出来（配置阶段）
+            running = _running;
+        }
+
+        if (!running)
+        {
+            LogReceived?.Invoke("§c当前没有运行中的账号进程，对话框输入未提交。");
+            return false;
+        }
+
+        try
+        {
+            MccDialogSubmit submit = new()
+            {
+                ActionIndex = actionIndex,
+                Values = new Dictionary<string, string>(values, StringComparer.Ordinal),
+            };
+
+            SendOrThrow(new RunnerMessage { Type = RunnerMessage.CmdDialog, Text = submit.ToJson() });
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LogReceived?.Invoke($"§c对话框输入提交失败：{ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>取消服务器弹出的对话框（子进程里没有进行中的对话框时安静返回 false）。</summary>
+    public bool CancelDialog()
+    {
+        if (_disposed)
+            return false;
+
+        bool running;
+        lock (_gate)
+        {
+            running = _running;
+        }
+
+        if (!running)
+            return false;
+
+        try
+        {
+            SendOrThrow(new RunnerMessage { Type = RunnerMessage.CmdDialogCancel });
+            return true;
+        }
+        catch
+        {
+            return false; // 进程刚好退出：没什么可取消的
+        }
     }
 
     public void Dispose()
@@ -665,7 +816,10 @@ public sealed class RunnerProcess : IAccountSession
 
     private static bool IsConfigCommand(string type) =>
         type is RunnerMessage.CmdAttack or RunnerMessage.CmdMouse
-            or RunnerMessage.CmdFishing or RunnerMessage.CmdReconnect;
+            or RunnerMessage.CmdFishing or RunnerMessage.CmdAutoRefill
+            or RunnerMessage.CmdWalk
+            or RunnerMessage.CmdMsgFilter
+            or RunnerMessage.CmdReconnect;
 
     private void SendOrThrow(RunnerMessage message)
     {

@@ -125,6 +125,46 @@ static int RunAccountStoreTest()
             ServerHost = "mc.example.com",
             Port = 25565,
             MinecraftVersion = "auto",
+
+            // 用户 2026-10-03 要求：功能参数必须跟随账号存取 —— 这里给一组"非默认"值，
+            // 重启后必须原样读回来（旧实现只存攻击过滤，其余参数全丢）。
+            Attack = new AttackOptions
+            {
+                Range = 3.5,
+                CooldownMinMs = 900,
+                CooldownMaxMs = 1700,
+                FilterMode = MobFilterMode.Blacklist,
+                Mobs = ["Zombie", "Skeleton"],
+            },
+            Mouse = new MouseOptions
+            {
+                Left = new MouseButtonOptions
+                {
+                    Enabled = true,
+                    Mode = MouseMode.IntervalHold,
+                    HoldMs = 1234,
+                    IntervalMs = 567,
+                    JitterPercent = 33,
+                },
+                Right = new MouseButtonOptions
+                {
+                    Enabled = false,
+                    Mode = MouseMode.Hold,
+                    HoldMs = 2000,
+                    IntervalMs = 800,
+                    JitterPercent = 12,
+                },
+                AimReach = 6.0,
+            },
+            FishingEnabled = true,
+            Reconnect = new ReconnectOptions
+            {
+                Enabled = false,
+                MaxAttempts = 7,
+                DelayMs = 4500,
+                JitterPercent = 25,
+            },
+            ViewRestoreEnabled = false,
         });
 
         bobId = store.Upsert(new AccountProfile
@@ -137,18 +177,32 @@ static int RunAccountStoreTest()
 
         aliceId = alice.Id;
 
-        // 同一账号再存一次（按 用户名+主机+端口 识别）不应产生重复记录
-        AccountProfile again = store.Upsert(new AccountProfile
-        {
-            Username = "Alice",
-            ServerHost = "mc.example.com",
-            Port = 25565,
-        });
+        // 同一账号再存一次（按 用户名+主机+端口 识别）不应产生重复记录。
+        // 用 CopyFrom 从已存记录派生一条"填完整"的新记录（模拟界面上的 TryBuildProfile：
+        // 它每次都会把全部参数带上）。若这里传稀疏记录，按设计会把没填的字段清成默认值。
+        AccountProfile withNewVersion = new();
+        withNewVersion.CopyFrom(alice);
+        withNewVersion.MinecraftVersion = "1.21.11";
+        // 旧的扁平过滤字段也跟着参数一起更新，保持一致（新代码以 Attack.FilterMode 为准）
+        withNewVersion.AttackFilterMode = (int)MobFilterMode.Blacklist;
+        withNewVersion.AttackFilterMobs = ["Zombie", "Skeleton"];
+
+        AccountProfile again = store.Upsert(withNewVersion);
 
         if (again.Id != aliceId)
         {
             Console.WriteLine("[TEST] FAIL: 重复账号未合并");
             return 11;
+        }
+
+        // 合并后参数必须还在（这是"改了参数就丢"的回归点）
+        if (again.Attack is null || again.Attack.Range != 3.5 || again.Mouse is null
+            || again.Reconnect is null || !again.FishingEnabled)
+        {
+            Console.WriteLine($"[TEST] FAIL: 合并账号时参数被抹掉：attack={Param.Show(again.Attack)} " +
+                              $"mouse={(again.Mouse is null ? "<null>" : "ok")} rc={(again.Reconnect is null ? "<null>" : "ok")} " +
+                              $"fishing={again.FishingEnabled}");
+            return 23;
         }
 
         if (store.LastError is not null)
@@ -169,11 +223,55 @@ static int RunAccountStoreTest()
         }
 
         AccountProfile? alice = list.FirstOrDefault(p => p.Username == "Alice");
+        // 版本在合并测试里被改成了 1.21.11（见上面的 withNewVersion），这里按新值核对
         if (alice is null || alice.ServerHost != "mc.example.com" || alice.Port != 25565
-            || alice.MinecraftVersion != "auto" || alice.DisplayName != "Alice")
+            || alice.MinecraftVersion != "1.21.11" || alice.DisplayName != "Alice")
         {
-            Console.WriteLine("[TEST] FAIL: 重载字段不一致");
+            Console.WriteLine($"[TEST] FAIL: 重载字段不一致：host={alice?.ServerHost} port={alice?.Port} " +
+                              $"ver={alice?.MinecraftVersion} name={alice?.DisplayName}");
             return 14;
+        }
+
+        // 功能参数必须跟随账号：重启后逐个核对（用户 2026-10-03 要求）
+        AttackOptions? at = alice.Attack;
+        if (at is null || at.Range != 3.5 || at.CooldownMinMs != 900
+            || at.CooldownMaxMs != 1700 || at.FilterMode != MobFilterMode.Blacklist
+            || at.Mobs.Count != 2 || at.Mobs[0] != "Zombie" || at.Mobs[1] != "Skeleton")
+        {
+            Console.WriteLine($"[TEST] FAIL: 砍怪参数未随账号还原：{Param.Show(at)}");
+            return 18;
+        }
+
+        MouseOptions? mo = alice.Mouse;
+        if (mo is null
+            || mo.AimReach != 6.0
+            || !mo.Left.Enabled || mo.Left.Mode != MouseMode.IntervalHold
+            || mo.Left.HoldMs != 1234 || mo.Left.IntervalMs != 567 || mo.Left.JitterPercent != 33
+            || mo.Right.Enabled || mo.Right.Mode != MouseMode.Hold
+            || mo.Right.HoldMs != 2000 || mo.Right.IntervalMs != 800 || mo.Right.JitterPercent != 12)
+        {
+            Console.WriteLine($"[TEST] FAIL: 鼠标参数未随账号还原：{Param.Show(mo)}");
+            return 19;
+        }
+
+        if (!alice.FishingEnabled || alice.ViewRestoreEnabled)
+        {
+            Console.WriteLine($"[TEST] FAIL: 钓鱼/视角开关未随账号还原：fishing={alice.FishingEnabled} view={alice.ViewRestoreEnabled}");
+            return 20;
+        }
+
+        ReconnectOptions? rc = alice.Reconnect;
+        if (rc is null || rc.Enabled || rc.MaxAttempts != 7
+            || rc.DelayMs != 4500 || rc.JitterPercent != 25)
+        {
+            Console.WriteLine($"[TEST] FAIL: 重连参数未随账号还原：{Param.Show(rc)}");
+            return 21;
+        }
+
+        if (alice.LastYaw is not null || alice.LastPitch is not null)
+        {
+            Console.WriteLine("[TEST] FAIL: 视角应由 Bot 写入，这里不应有值");
+            return 22;
         }
 
         if (!store.Remove(bobId))
@@ -308,10 +406,15 @@ static async Task<int> RunRunnerProcessTest(string[] rest)
     int logCount = 0;
     bool joined = false;
     int exitedCode = int.MinValue;
+    int gotErrorCount = 0;
 
     proc.LogReceived += text =>
     {
         Interlocked.Increment(ref logCount);
+        // 2026-10-04 回归闸：Bot 把异常抛给 MCC 的 OnUpdate 兜底会刷 'Update: Got error'
+        //（视角 Bot 历史上曾在恢复窗口与配置同步线程竞态，实测刷过 NRE；现为 ViewControlBot）。
+        if (text.Contains("Got error"))
+            Interlocked.Increment(ref gotErrorCount);
         Console.WriteLine("[LOG] " + text);
     };
     proc.StateChanged += state => Console.WriteLine("[STATE] " + state);
@@ -375,7 +478,22 @@ static async Task<int> RunRunnerProcessTest(string[] rest)
     // 自动化配置：多开时这些参数走管道下发，子进程不能报错
     proc.ConfigureAttack(true, new AttackOptions { Range = 3.0 });
     proc.ConfigureMouse(false, new MouseOptions());
-    proc.ConfigureFishing(false);
+    proc.ConfigureFishing(false, new FishingOptions());
+    proc.ConfigureAutoRefill(false);
+
+    // 自动行走：开一下再关，覆盖挂载 + 卸载两条路径（本地测试服上位移无所谓）
+    proc.ConfigureWalk(true);
+    await Task.Delay(1500);
+    proc.ConfigureWalk(false);
+
+    // 服务器信息过滤：两份前缀相互独立（2026-10-05），这里两种前缀模式各走一遍 + 恢复不过滤
+    // （覆盖 CmdMsgFilter 记账路径）
+    proc.ConfigureServerFilter(ServerFilterMode.PrefixWhitelist, "[smoke]", string.Empty);
+    await Task.Delay(300);
+    proc.ConfigureServerFilter(ServerFilterMode.BlockPrefix, string.Empty, "[smoke]");
+    await Task.Delay(300);
+    proc.ConfigureServerFilter(ServerFilterMode.None, string.Empty, string.Empty);
+
     proc.ConfigureReconnect(new ReconnectOptions { Enabled = false });
     await Task.Delay(500);
     if (exitedCode != int.MinValue)
@@ -416,6 +534,14 @@ static async Task<int> RunRunnerProcessTest(string[] rest)
         return 35;
     }
 
+    // 全程扫描：整个会话（进服 + 配置同步 + 输入 + 断开）都不许出现 Bot 异常刷屏
+    if (Volatile.Read(ref gotErrorCount) > 0)
+    {
+        Console.WriteLine($"[TEST] FAIL: 子进程日志出现 Bot 异常（Got error × {gotErrorCount}）");
+        proc.Dispose();
+        return 36;
+    }
+
     // Dispose 必须真正把子进程收干净（不能留僵尸进程）
     proc.Dispose();
 
@@ -453,4 +579,22 @@ static async Task<int> RunRunnerProcessTest(string[] rest)
 
     Console.WriteLine($"[TEST] runner PASS（日志 {logCount} 行，子进程已退出）");
     return 0;
+}
+
+// 断言失败时把实际值打出来，便于定位是哪个字段没还原。
+// 放在类型里（而不是用本地函数）：顶级语句文件里同名本地函数不能重载。
+internal static class Param
+{
+    public static string Show(AttackOptions? a) => a is null
+        ? "<null>"
+        : $"range={a.Range} cd={a.CooldownMinMs}-{a.CooldownMaxMs} mode={a.FilterMode} mobs=[{string.Join(',', a.Mobs)}]";
+
+    public static string Show(MouseOptions? m) => m is null
+        ? "<null>"
+        : $"reach={m.AimReach} L={m.Left.Enabled}/{m.Left.Mode}/{m.Left.HoldMs}/{m.Left.IntervalMs}/{m.Left.JitterPercent} " +
+          $"R={m.Right.Enabled}/{m.Right.Mode}/{m.Right.HoldMs}/{m.Right.IntervalMs}/{m.Right.JitterPercent}";
+
+    public static string Show(ReconnectOptions? r) => r is null
+        ? "<null>"
+        : $"enabled={r.Enabled} attempts={r.MaxAttempts} delay={r.DelayMs} jitter={r.JitterPercent}";
 }

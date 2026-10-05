@@ -1,8 +1,10 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using MCCX.Core;
+using MCCX.Core.Dialogs;
 using MCCX.Core.Networking;
 using Microsoft.UI.Dispatching;
+using Microsoft.UI.Xaml.Data;
 
 namespace MCCX_App.ViewModels;
 
@@ -17,7 +19,9 @@ namespace MCCX_App.ViewModels;
 /// </summary>
 public sealed class MainViewModel : ObservableObject, IDisposable
 {
-    /// <summary>右侧面板镜像的属性名：选中账号的同名属性变化时转发给绑定。</summary>
+    /// <summary>
+    /// 右侧面板镜像的属性名：选中账号的同名属性变化时转发给绑定。
+    /// </summary>
     private static readonly string[] ProxyNames =
     [
         nameof(ServerHost),
@@ -56,6 +60,16 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         nameof(MouseLeftHoldVisible),
         nameof(MouseRightHoldVisible),
         nameof(FishingEnabled),
+        nameof(FishingSoundDetection),
+        nameof(FishingVelocityDetection),
+        nameof(FishingTimeout),
+        nameof(FishingCastDelay),
+        // AutoRefillEnabled 之前漏登记了（切换账号时"自动补充"开关不刷新），随本次补上
+        nameof(AutoRefillEnabled),
+        nameof(AutoWalkEnabled),
+        nameof(ServerFilterModeIndex),
+        nameof(ServerFilterShowPrefix),
+        nameof(ServerFilterBlockPrefix),
         nameof(ReconnectEnabled),
         nameof(ReconnectAttempts),
         nameof(ReconnectDelayMs),
@@ -68,14 +82,42 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private readonly AccountStore _accountStore = new();
     private readonly ObservableCollection<LogEntry> _noAccountLogs = [];
 
+    /// <summary>参数落盘节流窗口（毫秒）：窗口内只写一次，避免输入框每敲一个字符就加密落盘。</summary>
+    private const long ParameterSaveIntervalMs = 800;
+
+    /// <summary>每个账号"上次落盘的参数签名"：值没变就不再写一次。</summary>
+    private readonly Dictionary<string, string> _lastSavedSignature = new(StringComparer.Ordinal);
+
+    /// <summary>每个账号上次落盘时刻（Environment.TickCount64）。</summary>
+    private readonly Dictionary<string, long> _lastSavedTicks = new(StringComparer.Ordinal);
+
+    /// <summary>被时间节流推迟的账号 Id：连接成功 / 退出前补写，保证参数不丢。</summary>
+    private readonly HashSet<string> _pendingParameters = new(StringComparer.Ordinal);
+
     /// <summary>没有选中账号时过滤列表的占位（空；这时右侧面板本来就是隐藏的）。</summary>
     private static readonly ObservableCollection<MobFilterItem> NoFilterItems = [];
+
+    /// <summary>常用命令库（自动记录 + 手动增删，明文 JSON 落在程序目录）。</summary>
+    private readonly FrequentCommandStore _frequentCommandStore = new();
 
     private AccountViewModel? _selectedAccount;
 
     public MainViewModel(DispatcherQueue dispatcherQueue)
     {
         _dispatcherQueue = dispatcherQueue ?? throw new ArgumentNullException(nameof(dispatcherQueue));
+
+        // 账号列表的分组视图：先挂上空源（账号在构造末尾 ReloadAccounts 里进来），
+        // 起始状态按上次记住的来（ui-settings.json，默认不分组 = 保持单列）。
+        _accountsViewSource.Source = _accountListSource;
+        AccountsView = _accountsViewSource.View;
+        SetGroupAccountsByServer(UiSettingsStore.ReadGroupAccountsByServer());
+
+        // 常用命令：读盘 → 挂集合通知 → 按使用频率排一次序
+        foreach (FrequentCommand entry in _frequentCommandStore.Load())
+            FrequentCommands.Add(entry);
+
+        FrequentCommands.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HasFrequentCommands));
+        ResortFrequentCommands();
 
         ConnectCommand = new AsyncRelayCommand(
             () =>
@@ -102,7 +144,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         AccountViewModel? first = SelectedAccount;
         first?.WriteNote("§8[MCCX] 就绪：左侧“添加账号”可新增多开账号，点击左侧账号切换右侧窗口。");
-        first?.WriteNote($"§8账号文件：{AccountStore.DefaultDirectory}");
+        first?.WriteNote($"§8账号文件：{_accountStore.StorageDirectory}");
+        if (AccountStore.UsingFallbackDirectory)
+            first?.WriteNote($"§e程序目录不可写，账号文件已改存到：{AccountStore.FallbackDirectory}");
         if (_accountStore.MigratedLegacyData)
             first?.WriteNote("§8已把旧的 %APPDATA%\\MCCX 账号文件迁移到程序目录。");
         if (!string.IsNullOrEmpty(_accountStore.LastError))
@@ -111,6 +155,66 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     /// <summary>左侧列表：每个账号一个独立会话（子进程）。</summary>
     public ObservableCollection<AccountViewModel> Accounts { get; } = [];
+
+    /// <summary>
+    /// 左侧账号列表<b>绑定的那个源</b>（2026-10-05 用户要求"按服务器分类"）：
+    /// 不分组时里面直接就是账号；分组时是"表头 + 该服的账号"交替排列
+    /// （表头是 <see cref="AccountGroupHeader"/>），由 <c>AccountTemplateSelector</c>
+    /// 按类型渲染成两种外观。
+    ///
+    /// 为什么不直接给 ListView 绑 <see cref="Accounts"/>：WinUI 3 移除了 UWP 的分组接口
+    /// （<c>IGroupable</c>/<c>GroupStyle</c>），用一个中间源来切换就不会动账号集合本身，
+    /// 也就不会打乱"最近使用"排序。
+    /// </summary>
+    private readonly ObservableCollection<object> _accountListSource = [];
+
+    private readonly CollectionViewSource _accountsViewSource = new();
+
+    /// <summary>左侧账号列表绑定的视图（元素：账号，或分组时的 <see cref="AccountGroupHeader"/>）。</summary>
+    public ICollectionView AccountsView { get; }
+
+    /// <summary>账号是否正在按服务器分组（对应左侧"按服务器分组"按钮）。</summary>
+    public bool GroupAccountsByServer { get; private set; }
+
+    /// <summary>
+    /// 切换"按服务器分组"，返回切换后的状态（界面用它改按钮文案）。
+    /// 打开时按服务器地址分数组、组内与组之间都按名称升序；关闭时恢复 <see cref="Accounts"/> 的原顺序。
+    /// </summary>
+    public bool SetGroupAccountsByServer(bool enabled)
+    {
+        GroupAccountsByServer = enabled;
+        RebuildAccountListSource();
+        return enabled;
+    }
+
+    /// <summary>
+    /// 按当前分组状态重建列表源。改的是同一个 <see cref="ObservableCollection"/>，
+    /// 视图会跟着收到 CollectionChanged 自动刷新，不需要手动 Refresh。
+    /// </summary>
+    private void RebuildAccountListSource()
+    {
+        _accountListSource.Clear();
+
+        if (!GroupAccountsByServer)
+        {
+            foreach (AccountViewModel account in Accounts)
+                _accountListSource.Add(account);
+
+            return;
+        }
+
+        // 按 GroupKey（即服务器地址，端口不参与）归组，组名与组内都按名称升序，
+        // 免得同服的账号顺序跟着"最近使用"乱跳。
+        foreach (IGrouping<string, AccountViewModel> group in Accounts
+                     .GroupBy(a => a.GroupKey, StringComparer.OrdinalIgnoreCase)
+                     .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            AccountViewModel[] members = group.OrderBy(a => a.DisplayName, StringComparer.OrdinalIgnoreCase).ToArray();
+            _accountListSource.Add(new AccountGroupHeader(group.Key, members.Length));
+            foreach (AccountViewModel member in members)
+                _accountListSource.Add(member);
+        }
+    }
 
     public AsyncRelayCommand ConnectCommand { get; }
 
@@ -128,6 +232,24 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     /// <summary>界面订阅：用户点了“添加账号”按钮。</summary>
     public event Action? RequestAddAccount;
+
+    /// <summary>界面订阅：某个账号收到了服务器对话框（MCC 的 Dialog 系统），要弹输入框。</summary>
+    public event Action<AccountViewModel, MccDialogInfo>? RequestServerDialog;
+
+    /// <summary>界面订阅：服务器关闭了某账号编号为该值的对话框（输入框要跟着收）。</summary>
+    public event Action<AccountViewModel, int>? CloseServerDialog;
+
+    /// <summary>常用命令列表（左边命令栏“常用命令”按钮的下拉内容）。</summary>
+    public ObservableCollection<FrequentCommand> FrequentCommands { get; } = [];
+
+    /// <summary>有没有常用命令：空列表时下拉里显示占位文案。</summary>
+    public bool HasFrequentCommands => FrequentCommands.Count > 0;
+
+    /// <summary>上方向键：回翻一条历史；返回 false 表示没历史可翻（按键走默认行为）。</summary>
+    public bool HistoryPrev() => SelectedAccount?.HistoryPrev() ?? false;
+
+    /// <summary>下方向键：往下翻一条。</summary>
+    public bool HistoryNext() => SelectedAccount?.HistoryNext() ?? false;
 
     /// <summary>是否有选中账号：为 false 时右侧面板整体隐藏（空白页）。</summary>
     public bool HasSelection => SelectedAccount is not null;
@@ -470,6 +592,105 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    /// <summary>收杆检测·水花声音（默认开）。</summary>
+    public bool FishingSoundDetection
+    {
+        get => Pick(a => a.FishingSoundDetection, true);
+        set
+        {
+            if (SelectedAccount is { } account)
+                account.FishingSoundDetection = value;
+        }
+    }
+
+    /// <summary>收杆检测·浮漂实体速度包（默认开）。</summary>
+    public bool FishingVelocityDetection
+    {
+        get => Pick(a => a.FishingVelocityDetection, true);
+        set
+        {
+            if (SelectedAccount is { } account)
+                account.FishingVelocityDetection = value;
+        }
+    }
+
+    /// <summary>抛竿超时（秒，默认 300）。</summary>
+    public string FishingTimeout
+    {
+        get => Pick(a => a.FishingTimeout, "300");
+        set
+        {
+            if (SelectedAccount is { } account)
+                account.FishingTimeout = value;
+        }
+    }
+
+    /// <summary>重抛间隔（秒，默认 0.4）。</summary>
+    public string FishingCastDelay
+    {
+        get => Pick(a => a.FishingCastDelay, "0.4");
+        set
+        {
+            if (SelectedAccount is { } account)
+                account.FishingCastDelay = value;
+        }
+    }
+
+    /// <summary>自动补充开关（2026-10-03 第五批需求：手持用完自动从背包补同款）。</summary>
+    public bool AutoRefillEnabled
+    {
+        get => Pick(a => a.AutoRefillEnabled, false);
+        set
+        {
+            if (SelectedAccount is { } account)
+                account.AutoRefillEnabled = value;
+        }
+    }
+
+    /// <summary>自动行走开关（2026-10-04 需求：一直朝当前朝向前进）。</summary>
+    public bool AutoWalkEnabled
+    {
+        get => Pick(a => a.AutoWalkEnabled, false);
+        set
+        {
+            if (SelectedAccount is { } account)
+                account.AutoWalkEnabled = value;
+        }
+    }
+
+    /// <summary>服务器信息过滤模式（0 不过滤 / 1 全屏蔽 / 2 只屏蔽玩家消息 / 3 只显示指定前缀 / 4 只屏蔽指定前缀）。</summary>
+    public int ServerFilterModeIndex
+    {
+        get => Pick(a => a.ServerFilterModeIndex, 0);
+        set
+        {
+            if (SelectedAccount is { } account)
+                account.ServerFilterModeIndex = value;
+        }
+    }
+
+    /// <summary>服务器信息过滤·"只显示指定前缀"用的前缀（空 = 全放行）。与下面那份相互独立。</summary>
+    public string ServerFilterShowPrefix
+    {
+        get => Pick(a => a.ServerFilterShowPrefix, string.Empty);
+        set
+        {
+            if (SelectedAccount is { } account)
+                account.ServerFilterShowPrefix = value;
+        }
+    }
+
+    /// <summary>服务器信息过滤·"只屏蔽指定前缀"用的前缀（空 = 全显示）。</summary>
+    public string ServerFilterBlockPrefix
+    {
+        get => Pick(a => a.ServerFilterBlockPrefix, string.Empty);
+        set
+        {
+            if (SelectedAccount is { } account)
+                account.ServerFilterBlockPrefix = value;
+        }
+    }
+
     public bool ReconnectEnabled
     {
         get => Pick(a => a.ReconnectEnabled, true);
@@ -482,7 +703,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public string ReconnectAttempts
     {
-        get => Pick(a => a.ReconnectAttempts, "5");
+        get => Pick(a => a.ReconnectAttempts, "0");
         set
         {
             if (SelectedAccount is { } account)
@@ -498,6 +719,30 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             if (SelectedAccount is { } account)
                 account.ReconnectDelayMs = value;
         }
+    }
+
+    /// <summary>
+    /// 视角移动（需求 4）：把「视角调整」下拉里的方向按钮（east/south/west/north/up/down）
+    /// 转成 <see cref="MccLookDirection"/> 交给当前账号。
+    /// </summary>
+    public void LookDirection(string? tag)
+    {
+        if (SelectedAccount is not { } account)
+            return;
+
+        MccLookDirection? direction = tag switch
+        {
+            "east" => MccLookDirection.East,
+            "south" => MccLookDirection.South,
+            "west" => MccLookDirection.West,
+            "north" => MccLookDirection.North,
+            "up" => MccLookDirection.Up,
+            "down" => MccLookDirection.Down,
+            _ => null,
+        };
+
+        if (direction is { } look)
+            account.LookAt(look);
     }
 
     private T Pick<T>(Func<AccountViewModel, T> getter, T fallback) =>
@@ -556,19 +801,25 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     #region 账号增删与持久化（需求 3.1 / 5. 多账号导航）
 
-    /// <summary>创建一个账号会话（子进程）并挂上“连接成功即写回账号库”。</summary>
+    /// <summary>创建一个账号会话（子进程）并挂上“连接成功即写回账号库”“参数变化即写回”。</summary>
     private AccountViewModel CreateAccount(AccountProfile profile)
     {
         AccountViewModel account = new(profile, _dispatcherQueue);
         account.Connected += OnAccountConnected;
-        account.AttackFilterChanged += OnAccountFilterChanged;
+        account.ParametersChanged += OnAccountParametersChanged;
+        account.CommandSent += OnAccountCommandSent;
+        account.DialogRequested += OnAccountDialogRequested;
+        account.DialogClosed += OnAccountDialogClosed;
         return account;
     }
 
     private void DetachAccount(AccountViewModel account)
     {
         account.Connected -= OnAccountConnected;
-        account.AttackFilterChanged -= OnAccountFilterChanged;
+        account.ParametersChanged -= OnAccountParametersChanged;
+        account.CommandSent -= OnAccountCommandSent;
+        account.DialogRequested -= OnAccountDialogRequested;
+        account.DialogClosed -= OnAccountDialogClosed;
     }
 
     private void ReloadAccounts()
@@ -586,6 +837,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         foreach (AccountProfile profile in list)
             Accounts.Add(CreateAccount(profile));
 
+        RebuildAccountListSource();
         SelectedAccount = Accounts.Count > 0 ? Accounts[0] : null;
     }
 
@@ -644,6 +896,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
 
         SelectedAccount = existing;
+        RebuildAccountListSource();
         existing.WriteNote($"§8已添加账号 {existing.DisplayName}（{existing.ServerSummary}）。");
 
         if (autoConnect)
@@ -666,6 +919,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         Accounts.Remove(target);
         DetachAccount(target);
         target.Dispose();
+        RebuildAccountListSource();
 
         // 删除的是最后一个账号 → 右侧面板回到空白页；否则选中相邻项
         SelectedAccount = Accounts.Count == 0
@@ -686,7 +940,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         SelectedAccount?.WriteNote($"§8已删除账号 {target.DisplayName}。");
     }
 
-    /// <summary>连接成功后把当前参数静默写回账号库（登录过的账号自动沉淀最新地址）。</summary>
+    /// <summary>连接成功后把当前参数静默写回账号库（登录过的账号自动沉淀最新地址与参数）。</summary>
     private void OnAccountConnected(AccountViewModel account)
     {
         AccountProfile? candidate = account.TryBuildProfile(silent: true);
@@ -696,6 +950,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         try
         {
             _accountStore.Upsert(candidate);
+            _lastSavedSignature[account.Id] = DescribeParameters(candidate);
+            _lastSavedTicks[account.Id] = Environment.TickCount64;
+            _pendingParameters.Remove(account.Id);
         }
         catch (Exception ex)
         {
@@ -704,24 +961,195 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>
-    /// 攻击生物过滤改了 → 写回加密账号库，重启后还在。
-    /// 用专门的 UpdateAttackFilter 而不是 Upsert：改个勾选不该把账号顶到“最近使用”打乱左侧顺序。
+    /// 任一功能参数变了 → 写回加密账号库，重启后跟随账号恢复
+    /// （用户 2026-10-03 要求：参数必须跟随账号存取）。
+    ///
+    /// 为什么用 <c>Upsert</c> 而不是专门的 Update*：参数现在都在 <see cref="AccountProfile"/> 里，
+    /// 整条记录一次写回最简单、也不会漏字段。副作用是 LastUsedAt 会被刷新（左侧列表按最近使用排序），
+    /// 这是"用户正在调这个账号的参数"的合理体现。
+    ///
+    /// 落盘做了两层减负，避免在输入框里每敲一个字符就加密落盘一次：
+    ///   1) 值级去重：参数与上次落盘完全一致就直接跳过；
+    ///   2) 时间节流：距上次落盘不足 <see cref="ParameterSaveIntervalMs"/> 且不是"非写不可"时延后，
+    ///      连接成功时会强制落盘一次，保证不会丢。
     /// </summary>
-    private void OnAccountFilterChanged(AccountViewModel account)
+    private void OnAccountParametersChanged(AccountViewModel account)
     {
         try
         {
-            bool saved = _accountStore.UpdateAttackFilter(
-                account.Id, account.AttackFilterModeIndex, account.SelectedAttackMobs);
+            AccountProfile? candidate = account.TryBuildProfile(silent: true);
+            if (candidate is null)
+                return;
 
-            if (!saved)
-                account.WriteNote("§e攻击过滤未保存：账号库里没有这个账号，重启后会恢复默认。");
-            else if (!string.IsNullOrEmpty(_accountStore.LastError))
-                account.WriteNote($"§c攻击过滤保存失败：{_accountStore.LastError}");
+            string signature = DescribeParameters(candidate);
+            bool unchanged = _lastSavedSignature.TryGetValue(account.Id, out string? previous)
+                             && string.Equals(previous, signature, StringComparison.Ordinal);
+
+            bool due = !_lastSavedTicks.TryGetValue(account.Id, out long last)
+                       || (Environment.TickCount64 - last) >= ParameterSaveIntervalMs;
+
+            if (unchanged && due)
+                return; // 值没变，不用再写一次
+
+            if (!due)
+                _pendingParameters.Add(account.Id);
+
+            _accountStore.Upsert(candidate);
+            _lastSavedSignature[account.Id] = signature;
+            _lastSavedTicks[account.Id] = Environment.TickCount64;
+
+            if (!string.IsNullOrEmpty(_accountStore.LastError))
+                account.WriteNote($"§c参数保存失败：{_accountStore.LastError}");
         }
         catch (Exception ex)
         {
-            account.WriteNote($"§c攻击过滤保存失败：{ex.Message}");
+            account.WriteNote($"§c参数保存失败：{ex.Message}");
+        }
+    }
+
+    /// <summary>某账号成功发出了一条命令 → 自动记进常用命令（含口令的命令不记）。</summary>
+    private void OnAccountCommandSent(AccountViewModel account, string text) => RecordFrequentCommand(text);
+
+    /// <summary>某账号收到服务器对话框 → 转发给界面弹输入框。</summary>
+    private void OnAccountDialogRequested(AccountViewModel account, MccDialogInfo info)
+        => RequestServerDialog?.Invoke(account, info);
+
+    /// <summary>服务器关掉了某账号的对话框 → 转发给界面收掉输入框。</summary>
+    private void OnAccountDialogClosed(AccountViewModel account, int revision)
+        => CloseServerDialog?.Invoke(account, revision);
+
+    #region 常用命令
+
+    /// <summary>自动记录一条发出过的命令：只记 MCC 内部命令，含口令的一律不记。</summary>
+    private void RecordFrequentCommand(string text)
+    {
+        if (FrequentCommand.IsAutoRecordable(text))
+            TouchFrequentCommand(text);
+    }
+
+    /// <summary>手动添加一条常用命令（用户自己敲的，不过滤）。返回是否添加成功。</summary>
+    public bool AddFrequentCommand(string? text)
+    {
+        text = text?.Trim();
+        if (string.IsNullOrEmpty(text))
+            return false;
+
+        TouchFrequentCommand(text);
+        return true;
+    }
+
+    /// <summary>从下拉里删掉一条常用命令。</summary>
+    public void RemoveFrequentCommand(FrequentCommand? entry)
+    {
+        if (entry is null || !FrequentCommands.Remove(entry))
+            return;
+
+        SaveFrequentCommands();
+    }
+
+    /// <summary>命中一次常用命令：计数 +1、重排、落盘。任何异常都不能把界面带崩。</summary>
+    private void TouchFrequentCommand(string text)
+    {
+        try
+        {
+            FrequentCommand? existing = FrequentCommands.FirstOrDefault(
+                entry => string.Equals(entry.Text, text, StringComparison.Ordinal));
+
+            if (existing is null)
+            {
+                existing = new FrequentCommand { Text = text, Count = 0 };
+                FrequentCommands.Add(existing);
+            }
+
+            existing.Count++;
+            existing.LastUsedAt = DateTimeOffset.Now;
+
+            ResortFrequentCommands();
+            SaveFrequentCommands();
+        }
+        catch (Exception ex)
+        {
+            SelectedAccount?.WriteNote($"§e记录常用命令失败：{ex.Message}");
+        }
+    }
+
+    /// <summary>按"用得多的在前"重排；超过上限丢最不常用的那条。</summary>
+    private void ResortFrequentCommands()
+    {
+        while (FrequentCommands.Count > FrequentCommandStore.MaxEntries)
+        {
+            FrequentCommand? victim = FrequentCommands
+                .OrderBy(entry => entry.Count)
+                .ThenBy(entry => entry.LastUsedAt)
+                .FirstOrDefault();
+
+            if (victim is null)
+                break;
+
+            FrequentCommands.Remove(victim);
+        }
+
+        List<FrequentCommand> ordered =
+            [.. FrequentCommands.OrderByDescending(entry => entry.Count).ThenByDescending(entry => entry.LastUsedAt)];
+
+        for (int i = 0; i < ordered.Count; i++)
+        {
+            int current = FrequentCommands.IndexOf(ordered[i]);
+            if (current > i)
+                FrequentCommands.Move(current, i);
+        }
+    }
+
+    private void SaveFrequentCommands()
+    {
+        try
+        {
+            if (!_frequentCommandStore.Save(FrequentCommands) && _frequentCommandStore.LastError is { } error)
+                SelectedAccount?.WriteNote($"§e常用命令保存失败：{error}");
+        }
+        catch (Exception ex)
+        {
+            SelectedAccount?.WriteNote($"§e常用命令保存失败：{ex.Message}");
+        }
+    }
+
+    #endregion
+
+    /// <summary>参数字典序签名：用来判断"参数到底变没变"，避免重复落盘。</summary>
+    private static string DescribeParameters(AccountProfile p)
+    {
+        AttackOptions a = p.Attack ?? new AttackOptions();
+        MouseOptions m = p.Mouse ?? new MouseOptions();
+        ReconnectOptions r = p.Reconnect ?? new ReconnectOptions();
+        FishingOptions f = p.Fishing ?? new FishingOptions();
+
+        return string.Join('|',
+            a.Range, a.CooldownMinMs, a.CooldownMaxMs, a.FilterMode, string.Join(',', a.Mobs),
+            m.AimReach,
+            m.Left.Enabled, m.Left.Mode, m.Left.HoldMs, m.Left.IntervalMs, m.Left.JitterPercent,
+            m.Right.Enabled, m.Right.Mode, m.Right.HoldMs, m.Right.IntervalMs, m.Right.JitterPercent,
+            p.FishingEnabled, f.SoundDetection, f.VelocityDetection, f.TimeoutSeconds, f.CastDelaySeconds,
+            p.AutoRefillEnabled, p.AutoWalkEnabled, p.ServerFilterMode,
+            p.ServerFilterShowPrefix, p.ServerFilterBlockPrefix,
+            r.Enabled, r.MaxAttempts, r.DelayMs);
+    }
+
+    /// <summary>把因节流被推迟的账号参数补写一次（连接成功、程序退出前调用，保证不丢）。</summary>
+    private void FlushPendingParameters()
+    {
+        if (_pendingParameters.Count == 0)
+            return;
+
+        string[] ids = [.. _pendingParameters];
+        _pendingParameters.Clear();
+
+        foreach (string id in ids)
+        {
+            AccountViewModel? account = Accounts.FirstOrDefault(a => a.Id == id);
+            if (account is null)
+                continue;
+
+            OnAccountParametersChanged(account);
         }
     }
 
@@ -729,6 +1157,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public void Dispose()
     {
+        // 退出前把节流推迟的参数补写一次，否则最后几秒改的参数会丢
+        FlushPendingParameters();
+
         foreach (AccountViewModel account in Accounts)
         {
             DetachAccount(account);
