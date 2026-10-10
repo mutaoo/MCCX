@@ -22,7 +22,8 @@ function Find-IdAnywhere([string]$Id) {
 }
 
 $TestCmd = '/mccx-g-new-test'
-$freqPath = Join-Path (Split-Path $script:AppExe) 'frequent-commands.json'
+# 2026-10-05：常用命令文件在用户数据目录（程序目录下的 UserData）里
+$freqPath = Join-Path (Join-Path (Split-Path $script:AppExe) 'UserData') 'frequent-commands.json'
 $hadFreqFile = Test-Path $freqPath
 
 Write-Host '=== 启动 MCCX ==='
@@ -93,14 +94,26 @@ try {
     Check ($texts -contains $TestCmd) '常用命令列表包含刚添加的条目'
 
     Write-Host "`n=== 5) 删除这条（清掉测试数据）==="
+    # 2026-10-05 修复：必须点"自己那条所在行"的 ✕。
+    # 原来取的是列表里第一个 ✕ —— 真实常用命令有多条时，删掉的是 /help 这类别人的条目，
+    # 断言自己那条消失必然失败，还会顺手删掉用户数据（本次已发生，见恢复记录）。
     $del = $null
     if ($list) {
-        try { $del = $list.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
-                (New-Object System.Windows.Automation.AndCondition(
-                    (New-Object System.Windows.Automation.PropertyCondition($script:AE::ControlTypeProperty, $script:CT::Button)),
-                    (New-Object System.Windows.Automation.PropertyCondition($script:AE::NameProperty, '删除常用命令'))))) } catch { }
+        $btnCond = New-Object System.Windows.Automation.PropertyCondition(
+            $script:AE::NameProperty, '删除常用命令')
+        $textCond = New-Object System.Windows.Automation.PropertyCondition(
+            $script:AE::ControlTypeProperty, $script:CT::Text)
+        foreach ($item in (Get-ListItems $list)) {
+            # 注意：Get-ItemTexts 是给"列表"用的（内部按子项遍历），对单个行元素会取空；
+            # 这里直接读该行下的 Text 后代拼成行文本。
+            $rowText = (@($item.FindAll([System.Windows.Automation.TreeScope]::Descendants, $textCond) |
+                    ForEach-Object { $_.Current.Name }) -join ' ')
+            if ($rowText -notlike "*$TestCmd*") { continue }
+            try { $del = $item.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $btnCond) } catch { $del = $null }
+            if ($del) { break }
+        }
     }
-    Check ($null -ne $del) '条目上有删除叉号'
+    Check ($null -ne $del) "自己那条（$TestCmd）所在行上有删除叉号"
     if ($del) {
         try {
             Invoke-Element $del

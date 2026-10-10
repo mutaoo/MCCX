@@ -254,6 +254,14 @@ public sealed class MCCSession : IAccountSession
             Settings.InternalConfig.ServerPort = options.Port;
             Settings.InternalConfig.MinecraftVersion = string.Empty;
 
+            // 调试模式（2026-10-09 需求⑤）：开着时把 MCC 的 DebugMessages + PacketDebugMessages
+            // 打开，网络循环退出原因（LogNetworkLoopExit）、包级收发才流到日志区；关着时强制回 False，
+            // 避免上一条会话留下的开关把日志刷屏。DebugEnabled 在 McClient 构造时读一次，
+            // 所以必须在 new McClient 之前落好——对下一次（重）连生效。
+            bool debugMode = UiSettingsStore.ReadDebugMode();
+            Settings.Config.Logging.DebugMessages = debugMode;
+            Settings.Config.Logging.PacketDebugMessages = debugMode;
+
             SessionToken session = new()
             {
                 PlayerID = "0",

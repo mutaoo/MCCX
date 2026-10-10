@@ -1,5 +1,5 @@
 ﻿# 本轮 UI 改动的几何 + 视觉验收：
-#   1) 参数一行（带冒号标签）+ 连接/断开；连接状态在功能卡片下方单独一行右侧
+#   1) 参数一行（带冒号标签）+ 连接/断开；连接状态+延迟浮在日志区右上角（2026-10-09 问题③定稿）
 #   2) “生物过滤”改成和“添加账号”一样的弹窗：分类可展开/收回，分类条与生物列表底色分层
 #   3) “添加账号”按钮在“账号列表”标题行最右侧；三个参数弹层宽度统一
 $ErrorActionPreference = 'Stop'
@@ -169,7 +169,7 @@ try {
         Start-Sleep -Milliseconds 1200
     }
 
-    # ================= 1) 参数一行放齐（带冒号标签）、连接状态在功能卡片下方右侧 =================
+    # ================= 1) 参数一行放齐（带冒号标签）、连接状态+延迟浮在日志区右上角 =================
     $srv   = Find-ById $script:AppRoot 'ServerBox'
     $port  = Find-ById $script:AppRoot 'PortBox'
     $user  = Find-ById $script:AppRoot 'UserBox'
@@ -177,7 +177,7 @@ try {
     $conn  = Get-UiButton '连接'
     $disc  = Get-UiButton '断开'
     $state = Find-ById $script:AppRoot 'StateTextBlock'
-    $log   = Find-ById $script:AppRoot 'LogList'
+    $log   = Find-ById $script:AppRoot 'LogScrollHost'
     # 功能区（自动化卡片）是个 Border，UIA 里不露 AutomationId，拿卡片里的首/末两个按钮当锚点，
     # 卡片顶/底边 = 按钮顶/底边 ∓ 卡片内边距(8)。
     $autoTop = Find-NamedAny '自动砍怪选项'
@@ -219,27 +219,32 @@ try {
         Assert-True ($dy -le 14) ("U1r {0} 与服务器框同一行" -f $pair[0]) "dCenter=$dy DIP"
     }
 
-    # 连接状态在功能卡片下方单独一行、靠右。锚点“按钮底 + 8”比卡片真底高约 1，
-    # 行距 10 + 文字行内缩：状态顶应落在卡底锚点下方 [−4, 30]；若退回“卡片内贴底”会是深负数，能挡下。
+    # 连接状态+延迟浮在日志区右上角（2026-10-09 问题③定稿）：状态不再自己占行，
+    # 整块盖在日志顶部（覆盖层 Margin(0,-4,6,0)+Padding(10,5)+边框 1 → 顶隙 2 DIP；
+    # 第四轮反馈间隙再砍一半，顶边用负边距压进行距带，状态文字仍在日志顶之下不破 U7c）。
     $stBottom = $st.Y + $st.Height
-    $dTop = Dip ($st.Y - $cardBottom)
-    Write-Host ("状态在卡下  dTop={0} DIP（卡底锚点={1} 状态顶={2}）" -f $dTop, (Dip $cardBottom), (Dip $st.Y))
-    Assert-True (($dTop -ge -4) -and ($dTop -le 30)) 'U4 状态在功能卡片下方（自己占一行）' "dTop=$dTop DIP"
+    $topGap = Dip ($st.Y - $lg.Y)
+    Write-Host ("状态浮日志右上  顶隙={0} DIP（日志顶={1} 状态顶={2}）" -f $topGap, (Dip $lg.Y), (Dip $st.Y))
+    Assert-True (($topGap -ge -4) -and ($topGap -le 40)) 'U4 状态浮在日志区顶部（不再自己占一行）' "topGap=$topGap DIP"
 
     # 整行落在开关行（卡片）下面，不和开关抢地方
     $gapSide = Dip ($st.Y - ($ab.Y + $ab.Height))
     Assert-True ($gapSide -ge 4) 'U5 状态在开关行下方（功能卡片外）' "gap=$gapSide DIP"
 
-    # 卡片与日志之间 = 行距 10 + 状态行(≈20) + 行距 10 ≈ 40：状态确实占了一行
+    # 卡片与日志之间不夹状态/延迟行（两行已撤，空 row 已整行删除，只剩一次行距 10）。
+    # 锚点“按钮底+8”比卡片真底矮一截（卡内留白+边框），实测值比行距大 10+ 属正常；
+    # 若状态行被加回来，gap 会再涨 30+ DIP，被上界挡下。
     $gapLog = Dip ($lg.Y - $cardBottom)
-    Assert-True (($gapLog -ge 26) -and ($gapLog -le 70)) 'U6 状态在卡片与日志之间占一行' "gap=$gapLog DIP"
+    Assert-True (($gapLog -ge 10) -and ($gapLog -le 60)) 'U6 卡片与日志之间不夹状态行（只剩行距）' "gap=$gapLog DIP"
 
-    # 卡片满宽：状态右沿 = 面板右缘（与卡片右沿平齐，贴右显示）
+    # 覆盖层贴日志区右上角：Margin 右 6 + Padding 8 = 文字右沿内缩面板右缘 14 DIP
     $stRight = Dip ($st.X + $st.Width)
-    $expectRight = $panelRight
-    Assert-True ([math]::Abs($stRight - $expectRight) -le 6) 'U7 状态右沿贴面板右缘（卡片下方右侧）' "stateRight=$stRight expect=$expectRight panelRight=$panelRight"
-    Assert-True ([math]::Abs($stRight - $rowRight) -le 8) 'U7a 状态右沿与参数行右沿（断开按钮）对齐' "stateRight=$stRight rowRight=$rowRight"
-    Assert-True ($stBottom -le ($lg.Y + 4 * $script:Scale)) 'U7c 状态在日志上方' "stateBottom=$(Dip $stBottom) logTop=$(Dip $lg.Y)"
+    $rightGap = $panelRight - $stRight
+    Assert-True (($rightGap -ge 4) -and ($rightGap -le 24)) 'U7 状态文字右沿内缩面板右缘（浮在日志右上）' "rightGap=$rightGap DIP panelRight=$panelRight"
+    Assert-True (($rowRight - $stRight) -ge 0 -and ($rowRight - $stRight) -le 24) 'U7a 状态文字右沿不超出参数行右沿（同右对齐）' "gap=$(($rowRight - $stRight)) DIP"
+    # 状态整块落在日志区内（顶边不早于日志顶、底边不晚于日志底），即"盖在日志上"而非挤在日志外
+    $logBottom = $lg.Y + $lg.Height
+    Assert-True (($st.Y -ge ($lg.Y - 4 * $script:Scale)) -and ($stBottom -le ($logBottom + 4 * $script:Scale))) 'U7c 状态浮在日志区内部（上沿之下、底沿之上）' "stateTop=$(Dip $st.Y) stateBottom=$(Dip $stBottom) logTop=$(Dip $lg.Y) logBottom=$(Dip $logBottom)"
 
     # 参数行与功能区之间不该夹状态行（状态已挪到卡片下面）
     Assert-True (($cardTop - ($sr.Y + $sr.Height)) -le 60 * $script:Scale) 'U7b 参数行与功能区之间没有夹状态行' "gap=$(Dip ($cardTop - ($sr.Y + $sr.Height))) DIP"

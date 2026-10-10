@@ -3,8 +3,8 @@
 
     背景：迁移前所有脚本都躺在 %TEMP%\opencode\ 下（随时可能被清理），
     且互相引用、输出、exe 路径全是写死的：
-      - . "C:\Users\ADMING\AppData\Local\Temp\opencode\autolib.ps1" / uia.ps1
-      - $script:AppExe = 'D:\code\c#\MCCX\MCCX.App\bin\Debug\...\MCCX.exe'
+      - . "%TEMP%\opencode\autolib.ps1" / uia.ps1
+      - $script:AppExe = '...\MCCX\MCCX.App\bin\Debug\...\MCCX.exe'
       - 输出写回 %TEMP%\opencode\<名字>_out.txt
     搬进仓库后这些路径全部失效。
 
@@ -22,7 +22,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string] $SourceDir = 'C:\Users\ADMING\AppData\Local\Temp\opencode',
+    [string] $SourceDir = (Join-Path $env:TEMP 'opencode'),
     [string] $RepoRoot  = (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)),
     [switch] $Apply
 )
@@ -71,15 +71,18 @@ Get-ChildItem -LiteralPath $SourceDir -Filter '*.ps1' -File | ForEach-Object {
 
 Write-Output ("`n将迁移 {0} 个脚本：" -f $plan.Count)
 
+# 迁移源目录的运行时构造（源码不写死绝对路径，换机器/换用户也成立）
+$oldTmp = Join-Path $env:TEMP 'opencode'
+
 $replacements = @(
-    @{ Pattern = [regex]::Escape('C:\Users\ADMING\AppData\Local\Temp\opencode\uia.ps1');       Replacement = '<LIB>\uia.ps1';       Note = 'uia 库引用' },
-    @{ Pattern = [regex]::Escape('C:\Users\ADMING\AppData\Local\Temp\opencode\autolib.ps1');   Replacement = '<LIB>\autolib.ps1';   Note = 'autolib 库引用' },
+    @{ Pattern = [regex]::Escape("$oldTmp\uia.ps1");       Replacement = '<LIB>\uia.ps1';       Note = 'uia 库引用' },
+    @{ Pattern = [regex]::Escape("$oldTmp\autolib.ps1");   Replacement = '<LIB>\autolib.ps1';   Note = 'autolib 库引用' },
     # run_p.ps1 与 run6.ps1 同目录（tests\suites），不是 artifacts
-    @{ Pattern = [regex]::Escape('C:\Users\ADMING\AppData\Local\Temp\opencode\run_p.ps1');     Replacement = '<SAMEDIR>\run_p.ps1'; Note = '同目录运行器' },
-    @{ Pattern = [regex]::Escape('D:\code\c#\MCCX\MCCX.App\bin\Debug\net10.0-windows10.0.26100.0\win-x64'); Replacement = '<EXEDIR>'; Note = 'exe 目录' },
-    @{ Pattern = [regex]::Escape('D:\code\c#\MCCX\docs\images');                              Replacement = '<IMGDIR>';            Note = 'README 图目录' },
-    @{ Pattern = [regex]::Escape('D:\code\c#\MCCX\accounts-stash');                            Replacement = '<STASHDIR>';          Note = '账号暂存目录' },
-    @{ Pattern = [regex]::Escape('C:\Users\ADMING\AppData\Local\Temp\opencode');               Replacement = '<TESTS>';             Note = '测试目录（输出等）' }
+    @{ Pattern = [regex]::Escape("$oldTmp\run_p.ps1");     Replacement = '<SAMEDIR>\run_p.ps1'; Note = '同目录运行器' },
+    @{ Pattern = [regex]::Escape((Join-Path $RepoRoot 'MCCX.App\bin\Debug\net10.0-windows10.0.26100.0\win-x64')); Replacement = '<EXEDIR>'; Note = 'exe 目录' },
+    @{ Pattern = [regex]::Escape((Join-Path $RepoRoot 'docs\images'));                              Replacement = '<IMGDIR>'; Note = 'README 图目录' },
+    @{ Pattern = [regex]::Escape((Join-Path $RepoRoot 'accounts-stash'));                            Replacement = '<STASHDIR>'; Note = '账号暂存目录' },
+    @{ Pattern = [regex]::Escape($oldTmp);               Replacement = '<TESTS>';             Note = '测试目录（输出等）' }
 )
 
 $changedFiles = 0
@@ -109,7 +112,7 @@ foreach ($item in $plan | Sort-Object Group, Name) {
     if (-not (Test-Path -LiteralPath $dstDir)) { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null }
 
     # 占位符展开成相对脚本位置的表达式。
-    # 关键一：源脚本里的路径大多写在【单引号】字符串里（'D:\...\MCCX.exe'），
+    # 关键一：源脚本里的路径大多写在【单引号】字符串里（'...\MCCX.exe'），
     #         所以必须按占位符词法替换，不能依赖引号形式。
     # 关键二：不要生成会嵌套同类引号的表达式（'$(Join-Path $x 'y')' 与 -f 都会引入引号而非法）。
     #         统一用字符串拼接，表达式内部除 '' 外不出现引号；含表达式的字符串外层用双引号。

@@ -48,7 +48,13 @@ public sealed class AccountStore : IDisposable
     public AccountStore(string? directory = null)
     {
         bool isDefaultDirectory = directory is null;
-        _directory = directory ?? DefaultDirectory;
+
+        // 默认位置下先把旧版本散落在程序目录根下的数据文件搬进 UserData（用户 2026-10-05 要求：
+        // 升级时只需拷一个文件夹）。传了 directory（测试用临时目录）则完全不碰默认位置。
+        if (isDefaultDirectory)
+            UserDataPaths.EnsureReady();
+
+        _directory = directory ?? UserDataPaths.Directory;
         _dataPath = Path.Combine(_directory, DataFileName);
         _keyPath = Path.Combine(_directory, KeyFileName);
 
@@ -59,7 +65,11 @@ public sealed class AccountStore : IDisposable
             MigrateLegacyDataIfAbsent();
     }
 
-    /// <summary>默认存储目录：exe 所在目录；不可写时退到 %LOCALAPPDATA%\MCCX。</summary>
+    /// <summary>
+    /// 程序目录根（<b>不是</b>账号库目录）：账号库与配置类文件都在它下面的
+    /// <see cref="UserDataPaths.FolderName"/> 子目录里，升级时只需拷那一个文件夹。
+    /// exe 所在目录；不可写时退到 %LOCALAPPDATA%\MCCX。
+    /// </summary>
     public static string DefaultDirectory { get; } = ResolveDefaultDirectory();
 
     /// <summary>%LOCALAPPDATA%\MCCX（exe 目录不可写时的备用位置；也是旧版迁移的来源之一）。</summary>

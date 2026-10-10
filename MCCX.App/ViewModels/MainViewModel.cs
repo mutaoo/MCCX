@@ -30,6 +30,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         nameof(MinecraftVersion),
         nameof(CommandInput),
         nameof(StateText),
+        nameof(LatencyText),
         nameof(IsConnected),
         nameof(AttackEnabled),
         nameof(AttackRange),
@@ -73,6 +74,14 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         nameof(ReconnectEnabled),
         nameof(ReconnectAttempts),
         nameof(ReconnectDelayMs),
+        // 各功能的"过程日志"开关（2026-10-08）：漏登记会让切换账号时开关显示不刷新
+        nameof(AttackLogEnabled),
+        nameof(MouseLogEnabled),
+        nameof(FishingLogEnabled),
+        nameof(RefillLogEnabled),
+        nameof(WalkLogEnabled),
+        nameof(ViewLogEnabled),
+        nameof(ReconnectLogEnabled),
         nameof(Logs),
     ];
 
@@ -144,11 +153,15 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         AccountViewModel? first = SelectedAccount;
         first?.WriteNote("§8[MCCX] 就绪：左侧“添加账号”可新增多开账号，点击左侧账号切换右侧窗口。");
-        first?.WriteNote($"§8账号文件：{_accountStore.StorageDirectory}");
+        // 2026-10-05：账号库与配置类文件统一在 UserData 文件夹里，报路径时说文件夹本身，
+        // 升级新版只要把这个文件夹拷过去。
+        first?.WriteNote($"§8用户数据目录：{_accountStore.StorageDirectory}");
         if (AccountStore.UsingFallbackDirectory)
-            first?.WriteNote($"§e程序目录不可写，账号文件已改存到：{AccountStore.FallbackDirectory}");
+            first?.WriteNote($"§e程序目录不可写，用户数据已改存到：{AccountStore.FallbackDirectory}\\{UserDataPaths.FolderName}");
+        if (UserDataPaths.MigratedFlatFiles)
+            first?.WriteNote("§8已把程序目录下的旧数据文件迁移到用户数据目录。");
         if (_accountStore.MigratedLegacyData)
-            first?.WriteNote("§8已把旧的 %APPDATA%\\MCCX 账号文件迁移到程序目录。");
+            first?.WriteNote("§8已把旧的 %APPDATA%\\MCCX 账号文件迁移到用户数据目录。");
         if (!string.IsNullOrEmpty(_accountStore.LastError))
             first?.WriteNote($"§e账号列表解密失败，已按空列表启动：{_accountStore.LastError}");
     }
@@ -338,6 +351,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     }
 
     public string StateText => Pick(a => a.StateText, "未连接");
+
+    /// <summary>选中账号的连接延迟（2026-10-08 需求：状态行下方显示当前账号的延迟）。</summary>
+    public string LatencyText => Pick(a => a.LatencyText, "延迟 --");
 
     public bool IsConnected => Pick(a => a.IsConnected, false);
 
@@ -655,6 +671,86 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             if (SelectedAccount is { } account)
                 account.AutoWalkEnabled = value;
+        }
+    }
+
+    // —— 各功能的"过程日志"开关（2026-10-08 需求：Bot 日志刷屏，每个功能可单独关）——
+    // 默认 true：没有选中账号时面板显示"开"，与账号库里"缺键 = 开"的口径一致。
+
+    /// <summary>自动砍怪的过程日志（开关状态提示不受它影响）。</summary>
+    public bool AttackLogEnabled
+    {
+        get => Pick(a => a.AttackLogEnabled, true);
+        set
+        {
+            if (SelectedAccount is { } account)
+                account.AttackLogEnabled = value;
+        }
+    }
+
+    /// <summary>鼠标按键控制的过程日志。</summary>
+    public bool MouseLogEnabled
+    {
+        get => Pick(a => a.MouseLogEnabled, true);
+        set
+        {
+            if (SelectedAccount is { } account)
+                account.MouseLogEnabled = value;
+        }
+    }
+
+    /// <summary>自动钓鱼的过程日志。</summary>
+    public bool FishingLogEnabled
+    {
+        get => Pick(a => a.FishingLogEnabled, true);
+        set
+        {
+            if (SelectedAccount is { } account)
+                account.FishingLogEnabled = value;
+        }
+    }
+
+    /// <summary>自动补充的过程日志。</summary>
+    public bool RefillLogEnabled
+    {
+        get => Pick(a => a.RefillLogEnabled, true);
+        set
+        {
+            if (SelectedAccount is { } account)
+                account.RefillLogEnabled = value;
+        }
+    }
+
+    /// <summary>自动行走的过程日志。</summary>
+    public bool WalkLogEnabled
+    {
+        get => Pick(a => a.WalkLogEnabled, true);
+        set
+        {
+            if (SelectedAccount is { } account)
+                account.WalkLogEnabled = value;
+        }
+    }
+
+    /// <summary>视角（含进服朝向守卫）的过程日志。</summary>
+    public bool ViewLogEnabled
+    {
+        get => Pick(a => a.ViewLogEnabled, true);
+        set
+        {
+            if (SelectedAccount is { } account)
+                account.ViewLogEnabled = value;
+        }
+    }
+
+    /// <summary>自动重连的过程日志。</summary>
+    public bool ReconnectLogEnabled
+    {
+        get => Pick(a => a.ReconnectLogEnabled, true);
+        set
+        {
+            if (SelectedAccount is { } account)
+                account.ReconnectLogEnabled = value;
         }
     }
 
@@ -1131,7 +1227,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             p.FishingEnabled, f.SoundDetection, f.VelocityDetection, f.TimeoutSeconds, f.CastDelaySeconds,
             p.AutoRefillEnabled, p.AutoWalkEnabled, p.ServerFilterMode,
             p.ServerFilterShowPrefix, p.ServerFilterBlockPrefix,
-            r.Enabled, r.MaxAttempts, r.DelayMs);
+            r.Enabled, r.MaxAttempts, r.DelayMs,
+            // 功能日志开关：字典按键排序，保证同一份配置永远得到同一串签名，
+            // 否则"关掉日志开关"可能被节流判定成"没变化"而不落盘。
+            string.Join(',', p.FeatureLogSwitches.OrderBy(kv => kv.Key, StringComparer.Ordinal)
+                                                  .Select(kv => kv.Key + "=" + kv.Value)));
     }
 
     /// <summary>把因节流被推迟的账号参数补写一次（连接成功、程序退出前调用，保证不丢）。</summary>

@@ -92,11 +92,12 @@
     <!--
             日志行的右键菜单（2026-10-05 用户要求：去掉底部"复制日志"按钮，
             改成选中文字后右键出现复制）。
-            「复制」复制选中的那几个字（没选中就复制整行），「打开链接」交给系统浏览器。
+            「复制」复制选中的那几个字（没选中就复制整行）。
+            2026-10-09 需求④：去掉「打开链接」——链接统一改为 Ctrl+左键点击跳转，
+            并在链接下方画一条下划线作提示（下划线由 LogBox 之上的 LinkUnderlineLayer 画，见 MainPage.xaml.cs）。
         -->
         <MenuFlyout x:Key="LogContextMenu">
             <MenuFlyoutItem Text="复制" Click="LogContextCopy_Click" />
-            <MenuFlyoutItem Text="打开链接" Click="LogContextOpenLink_Click" />
         </MenuFlyout>
     </Page.Resources>
 
@@ -240,8 +241,7 @@
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
             <Grid.RowDefinitions>
-                <!-- 0 参数行 / 1 功能区卡片 / 2 连接状态行 / 3 日志 / 4 命令栏 -->
-                <RowDefinition Height="Auto" />
+                <!-- 0 参数行 / 1 功能区卡片 / 2 日志 / 3 命令栏 -->
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
@@ -426,6 +426,27 @@
                                                 PointerExited="LabelButton_PointerExited">
                                             <TextBlock Text="生物过滤" VerticalAlignment="Center" />
                                         </Button>
+
+                                        <!-- 2026-10-08 需求：每个功能一个独立日志开关（过程日志，状态提示照常推） -->
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="76" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="日志：" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Column="1"
+                                                       Text="关掉只留开关状态提示"
+                                                       FontSize="12"
+                                                       Opacity="0.7"
+                                                       VerticalAlignment="Center"
+                                                       TextWrapping="Wrap" />
+                                            <ToggleSwitch Grid.Column="2"
+                                                          AutomationProperties.Name="自动砍怪日志"
+                                                          MinWidth="0"
+                                                          ToolTipService.ToolTip="关掉后本功能的过程日志不再显示；开关状态提示照常推送"
+                                                          IsOn="{x:Bind ViewModel.AttackLogEnabled, Mode=TwoWay}" />
+                                        </Grid>
                                     </StackPanel>
                                 </Flyout>
                             </DropDownButton.Flyout>
@@ -624,6 +645,27 @@
                                                    FontSize="12"
                                                    Opacity="0.7"
                                                    TextWrapping="Wrap" />
+
+                                        <!-- 2026-10-08 需求：每个功能一个独立日志开关（过程日志，状态提示照常推） -->
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="76" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="日志：" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Column="1"
+                                                       Text="关掉只留开关状态提示"
+                                                       FontSize="12"
+                                                       Opacity="0.7"
+                                                       VerticalAlignment="Center"
+                                                       TextWrapping="Wrap" />
+                                            <ToggleSwitch Grid.Column="2"
+                                                          AutomationProperties.Name="鼠标控制日志"
+                                                          MinWidth="0"
+                                                          ToolTipService.ToolTip="关掉后本功能的过程日志不再显示；开关状态提示照常推送"
+                                                          IsOn="{x:Bind ViewModel.MouseLogEnabled, Mode=TwoWay}" />
+                                        </Grid>
                                     </StackPanel>
                                 </Flyout>
                             </DropDownButton.Flyout>
@@ -714,6 +756,27 @@
                                                    FontSize="12"
                                                    Opacity="0.7"
                                                    TextWrapping="Wrap" />
+
+                                        <!-- 2026-10-08 需求：每个功能一个独立日志开关（过程日志，状态提示照常推） -->
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="76" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="日志：" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Column="1"
+                                                       Text="关掉只留开关状态提示"
+                                                       FontSize="12"
+                                                       Opacity="0.7"
+                                                       VerticalAlignment="Center"
+                                                       TextWrapping="Wrap" />
+                                            <ToggleSwitch Grid.Column="2"
+                                                          AutomationProperties.Name="自动钓鱼日志"
+                                                          MinWidth="0"
+                                                          ToolTipService.ToolTip="关掉后本功能的过程日志不再显示；开关状态提示照常推送"
+                                                          IsOn="{x:Bind ViewModel.FishingLogEnabled, Mode=TwoWay}" />
+                                        </Grid>
                                     </StackPanel>
                                 </Flyout>
                             </DropDownButton.Flyout>
@@ -767,6 +830,27 @@
                                                    FontSize="12"
                                                    Opacity="0.7"
                                                    TextWrapping="Wrap" />
+
+                                        <!-- 2026-10-08 需求：每个功能一个独立日志开关（过程日志，状态提示照常推） -->
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="76" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="日志：" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Column="1"
+                                                       Text="关掉只留开关状态提示"
+                                                       FontSize="12"
+                                                       Opacity="0.7"
+                                                       VerticalAlignment="Center"
+                                                       TextWrapping="Wrap" />
+                                            <ToggleSwitch Grid.Column="2"
+                                                          AutomationProperties.Name="自动重连日志"
+                                                          MinWidth="0"
+                                                          ToolTipService.ToolTip="关掉后本功能的过程日志不再显示；开关状态提示照常推送"
+                                                          IsOn="{x:Bind ViewModel.ReconnectLogEnabled, Mode=TwoWay}" />
+                                        </Grid>
                                     </StackPanel>
                                 </Flyout>
                             </DropDownButton.Flyout>
@@ -864,6 +948,27 @@
                                                 <TextBlock Text="低头看地" VerticalAlignment="Center" />
                                             </Button>
                                         </Grid>
+
+                                        <!-- 2026-10-08 需求：每个功能一个独立日志开关（过程日志，状态提示照常推） -->
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="76" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="日志：" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Column="1"
+                                                       Text="关掉只留开关状态提示"
+                                                       FontSize="12"
+                                                       Opacity="0.7"
+                                                       VerticalAlignment="Center"
+                                                       TextWrapping="Wrap" />
+                                            <ToggleSwitch Grid.Column="2"
+                                                          AutomationProperties.Name="视角日志"
+                                                          MinWidth="0"
+                                                          ToolTipService.ToolTip="关掉后本功能的过程日志不再显示；开关状态提示照常推送"
+                                                          IsOn="{x:Bind ViewModel.ViewLogEnabled, Mode=TwoWay}" />
+                                        </Grid>
                                     </StackPanel>
                                 </Flyout>
                             </DropDownButton.Flyout>
@@ -872,13 +977,52 @@
 
                     <!--
                         自动补充（2026-10-03 第五批需求）：手持用完/损坏时自动从背包补同款。
-                        没有参数要调，不上下拉按钮，行尾直接"文字 + 开关"；
-                        行内放不下时靠外面的 ScrollViewer 横向滑出来（用户要求：一行显示不全就左右滑动显示）。
+                        2026-10-08 起标签改成下拉按钮：本功能没有别的参数，弹层里只放
+                        “日志”开关（用户要求每个功能一个独立日志开关）；
+                        行内放不下时仍靠外面的 ScrollViewer 横向滑出来。
                     -->
                     <StackPanel Orientation="Horizontal" Spacing="4">
-                        <TextBlock Text="自动补充"
-                                   VerticalAlignment="Center"
-                                   ToolTipService.ToolTip="手持物品用完/损坏消失时，自动从背包找同款补到手上（主背包优先，其他快捷栏兜底，副手不参与）" />
+                        <DropDownButton AutomationProperties.Name="自动补充选项"
+                                        ToolTipService.ToolTip="自动补充参数"
+                                        Padding="8,2"
+                                        MinWidth="0"
+                                        PointerEntered="LabelButton_PointerEntered"
+                                        PointerExited="LabelButton_PointerExited">
+                            <TextBlock Text="自动补充" VerticalAlignment="Center" />
+                            <DropDownButton.Flyout>
+                                <Flyout Placement="Bottom" Opened="OnFlyoutOpened">
+                                    <!-- 宽度与砍怪/鼠标/重连弹层统一 312 -->
+                                    <StackPanel Spacing="8" Width="312">
+                                        <TextBlock Text="手持物品用完/损坏消失时，自动从背包找同款补到手上（主背包优先，其他快捷栏兜底，副手不参与）。"
+                                                   FontSize="12"
+                                                   Opacity="0.7"
+                                                   TextWrapping="Wrap" />
+
+                                        <!-- 2026-10-08 需求：每个功能一个独立日志开关（过程日志，状态提示照常推） -->
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="76" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="日志：" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Column="1"
+                                                       Text="关掉只留开关状态提示"
+                                                       FontSize="12"
+                                                       Opacity="0.7"
+                                                       VerticalAlignment="Center"
+                                                       TextWrapping="Wrap" />
+                                            <ToggleSwitch Grid.Column="2"
+                                                          AutomationProperties.Name="自动补充日志"
+                                                          MinWidth="0"
+                                                          ToolTipService.ToolTip="关掉后本功能的过程日志不再显示；开关状态提示照常推送"
+                                                          IsOn="{x:Bind ViewModel.RefillLogEnabled, Mode=TwoWay}" />
+                                        </Grid>
+                                    </StackPanel>
+                                </Flyout>
+                            </DropDownButton.Flyout>
+                        </DropDownButton>
+
                         <ToggleSwitch AutomationProperties.Name="自动补充"
                                       MinWidth="0"
                                       IsOn="{x:Bind ViewModel.AutoRefillEnabled, Mode=TwoWay}" />
@@ -886,12 +1030,50 @@
 
                     <!--
                         自动行走（2026-10-04 需求）：只管一直朝前走。
-                        没有参数，和"自动补充"同款：行尾"文字 + 开关"，放不下靠 ScrollViewer 横滑。
+                        2026-10-08 起标签改成下拉按钮：弹层里放“日志”开关（本功能没有别的参数）。
                     -->
                     <StackPanel Orientation="Horizontal" Spacing="4">
-                        <TextBlock Text="自动行走"
-                                   VerticalAlignment="Center"
-                                   ToolTipService.ToolTip="进服后持续朝当前朝向前进（自动寻路，遇墙绕行/遇高差会重试）；关掉开关或断开连接即停" />
+                        <DropDownButton AutomationProperties.Name="自动行走选项"
+                                        ToolTipService.ToolTip="自动行走参数"
+                                        Padding="8,2"
+                                        MinWidth="0"
+                                        PointerEntered="LabelButton_PointerEntered"
+                                        PointerExited="LabelButton_PointerExited">
+                            <TextBlock Text="自动行走" VerticalAlignment="Center" />
+                            <DropDownButton.Flyout>
+                                <Flyout Placement="Bottom" Opened="OnFlyoutOpened">
+                                    <!-- 宽度与砍怪/鼠标/重连弹层统一 312 -->
+                                    <StackPanel Spacing="8" Width="312">
+                                        <TextBlock Text="进服后持续朝当前朝向前进（自动寻路，遇墙绕行/遇高差会重试）；关掉开关或断开连接即停。"
+                                                   FontSize="12"
+                                                   Opacity="0.7"
+                                                   TextWrapping="Wrap" />
+
+                                        <!-- 2026-10-08 需求：每个功能一个独立日志开关（过程日志，状态提示照常推） -->
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="76" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="日志：" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Column="1"
+                                                       Text="关掉只留开关状态提示"
+                                                       FontSize="12"
+                                                       Opacity="0.7"
+                                                       VerticalAlignment="Center"
+                                                       TextWrapping="Wrap" />
+                                            <ToggleSwitch Grid.Column="2"
+                                                          AutomationProperties.Name="自动行走日志"
+                                                          MinWidth="0"
+                                                          ToolTipService.ToolTip="关掉后本功能的过程日志不再显示；开关状态提示照常推送"
+                                                          IsOn="{x:Bind ViewModel.WalkLogEnabled, Mode=TwoWay}" />
+                                        </Grid>
+                                    </StackPanel>
+                                </Flyout>
+                            </DropDownButton.Flyout>
+                        </DropDownButton>
+
                         <ToggleSwitch AutomationProperties.Name="自动行走"
                                       MinWidth="0"
                                       IsOn="{x:Bind ViewModel.AutoWalkEnabled, Mode=TwoWay}" />
@@ -975,71 +1157,145 @@
             </Border>
 
             <!--
-                连接状态：功能卡片下方单独一行、靠右（卡片与日志之间）。
-                不进卡片——不压开关、不挤功能区；也不盖日志——自己占一行，日志从它下面开始。
-                右沿与卡片右沿同为面板右缘；文案过长只用省略号截自己。
+                2026-10-09 用户定稿（问题③第二轮）：状态与延迟**不再各占一行**，改为一起
+                浮在日志区右上角（见下方日志 Grid 里的覆盖层）——之前"状态一行 + 延迟一行"
+                把日志整体往下顶了两行，用户明确不要。
+                2026-10-09 第三轮反馈"浮窗与功能区间隙过大，缩短一半"：空着的 row2 虽然高 0，
+                但 RowSpacing 在它两侧各算一次（10+10），比其它行距翻倍。整行先撤掉（12 DIP）；
+                第四轮反馈"还是有点大，再缩短一半"：覆盖层顶边距改成 -4，压进行距带里 ——
+                功能卡片底到浮窗顶 = 10 - 4 = 6 DIP，两轮 24 → 12 → 6；
+                状态文字顶仍在日志顶之下（logTop + 2 DIP），不破 v_ui7 U7c。
+                日志区现在直接是 row2，拿满剩余高度。
             -->
-            <TextBlock x:Name="StateTextBlock"
-                       Grid.Row="2"
-                       HorizontalAlignment="Right"
-                       VerticalAlignment="Center"
-                       FontWeight="SemiBold"
-                       Text="{x:Bind ViewModel.StateText, Mode=OneWay}"
-                       TextTrimming="CharacterEllipsis" />
 
             <!--
-                日志（2026-10-05 用户要求：控制台要能像记事本一样在行内自由框选文字）：
-                · 用 ItemsRepeater 而不是 ListView —— ListView 会在行内**抢走指针**做自己的选中，
-                  放进 ListViewItem 的 TextBox 根本拖不出选择范围（实测怎么拖都没反应）。
-                  ItemsRepeater 没有任何选中逻辑，TextBox 的原生框选才生效。
-                · 每行是一个只读 TextBox：可自由框选、Ctrl+C 复制选中的字、右键菜单复制 / 打开链接。
-                · 行里有链接时鼠标移上去整行加下划线；Ctrl+点击或右键"打开链接"交给浏览器。
-                · ScrollViewer 显式写出来并命名（LogScrollHost）：既给 ItemsRepeater 当宿主，
-                  也让"跟随最新一行"和自动化测试都能直接定位它。
+                日志（2026-10-08 用户第二轮反馈"控制台还是无法选中文本"）：
+                · 合并成**一个**大只读 TextBox（见下方 LogBox）——2026-10-05 的"每行一个 TextBox"
+                  只做到行内可选，选区跨不了行，复制不了好几行，这一版补上。
+                · ScrollViewer 显式写出来并命名（LogScrollHost）：外层滚动宿主，
+                  "跟随最新一行"和自动化测试都直接定位它。
+                · 2026-10-06 反馈"日志在刷时框选会被自动跟随打断"仍然成立：拖动选中文本和平移滚动
+                  走同一条 Direct Manipulation 管线，视图被程序挪一下这次框选就作废。
+                  所以代码里按"指针按在日志区 / 当前行有选区"暂停跟随（MainPage.LogSelectionInProgress），
+                  框选期间还会把文本重绘一并延后（MainPage.FlushLogText）——设置 Text 会清选区，
+                  和挪视图是同一类事故。松手或取消选区后自动恢复。
+                · 链接：Ctrl+左键点击跳转，链接下方画下划线作提示（LinkUnderlineLayer），
+                  命中行由指针位置反查（GetLineTextAtPointer）。右键菜单只留"复制"。
+                  行内悬停下划线随逐行渲染一并取消：纯文本 TextBox 没法只给某几个字加下划线，
+                  要保留就得换富文本控件，而那会丢 ValuePattern，测试读日志的整条链路都要重做。
+                · 2026-10-09 问题③定稿：连接状态与延迟**浮在日志区右上角**（不再各占一行把
+                  日志往下顶）。覆盖层 IsHitTestVisible=False：点击/框选全部穿透到 LogBox，
+                  只是视觉上盖在日志文字上层。
             -->
-            <ScrollViewer x:Name="LogScrollHost"
-                          Grid.Row="3"
-                          VerticalScrollBarVisibility="Auto"
-                          VerticalScrollMode="Auto"
-                          HorizontalScrollBarVisibility="Disabled"
-                          HorizontalScrollMode="Disabled">
-                <ItemsRepeater x:Name="LogList"
-                               ItemsSource="{x:Bind ViewModel.Logs, Mode=OneWay}"
-                               ContextFlyout="{StaticResource LogContextMenu}"
-                               Tapped="LogList_Tapped"
-                               RightTapped="LogList_RightTapped"
-                               Loaded="LogList_Loaded">
-                    <ItemsRepeater.ItemTemplate>
-                        <DataTemplate x:DataType="viewmodels:LogEntry">
-                            <Grid Background="Transparent"
-                                  PointerEntered="LogItem_PointerEntered"
-                                  PointerExited="LogItem_PointerExited">
-                                <!--
-                                    只读 TextBox 而不是 TextBlock：WinUI 3 的 TextBox 原生就能在行内
-                                    自由框选，并能把选中的那几个字读出来（SelectedText）给右键菜单复制。
-                                    视觉上把边框/背景/内边距都去掉，看起来仍是一行纯文本。
-                                    SelectionHighlightColor 显式给：默认选中高亮太淡，浅色/暗色底上
-                                    都几乎看不出选中（用户 2026-10-05 反馈"无法判断是否被选中"）。
-                                -->
-                                <TextBox Text="{x:Bind Text, Mode=OneWay}"
-                                         IsReadOnly="True"
-                                         AcceptsReturn="True"
-                                         IsTabStop="False"
-                                         BorderThickness="0"
-                                         Background="Transparent"
-                                         Padding="0"
-                                         TextWrapping="Wrap"
-                                         SelectionHighlightColor="#4080D0FF"
-                                         FontFamily="Consolas"
-                                         FontSize="12" />
-                            </Grid>
-                        </DataTemplate>
-                    </ItemsRepeater.ItemTemplate>
-                </ItemsRepeater>
-            </ScrollViewer>
+            <Grid Grid.Row="2">
+                <ScrollViewer x:Name="LogScrollHost"
+                              VerticalScrollBarVisibility="Auto"
+                              VerticalScrollMode="Auto"
+                              HorizontalScrollBarVisibility="Disabled"
+                              HorizontalScrollMode="Disabled">
+                <!--
+                    2026-10-08 用户要求（第二轮"还是选不中"）：整个控制台合并成**一个**大只读 TextBox。
+                    2026-10-05 的方案是"每行一个只读 TextBox"——行内能选了，但选区跨不了行：
+                    拖过行边界就断，用户要复制的往往正是好几行，等于没修好。合并成一个 TextBox 后
+                    选区天然跨行，Ctrl+C 与右键"复制"都走 TextBox 原生能力。
+
+                    视觉参数照抄原来的行模板（Consolas 12 / Wrap / 透明底无边框 / #4080D0FF 选中高亮 /
+                    MinHeight=0），观感与之前逐行渲染完全一致。
+
+                    内层滚动全部 Disabled：让 TextBox 撑到内容全高，**外层 LogScrollHost 负责滚动**——
+                    "跟随最新一行"的三条路径和自动化测试的 ScrollPattern（p_filter H 段、v_ui7）都还认它。
+
+                    文本不走 x:Bind：由 MainPage.RebuildLogText 从 LogEntry 全量重建
+                    （含重复合并成"原文 xN"的就地刷新）。ValuePattern 仍在，
+                    测试读日志的 Get-RecentLogText / Wait-LogContains 一套不用改。
+
+                    2026-10-09 需求④：链接下方加一条下划线作"可 Ctrl+点击"的提示。
+                    纯文本 TextBox 没法只给某几个字加下划线（那要富文本、会丢 ValuePattern），
+                    所以在 LogBox 之上叠一层**不参与命中测试**的 Canvas（LinkUnderlineLayer），
+                    用 GetRectFromCharacterIndex 算出每个链接字符的矩形、在字底画一条 1px 线。
+                    Canvas 与 LogBox 同处一个 Grid（同样撑到内容全高），随外层 LogScrollHost 一起滚动，
+                    不改 LogBox.Text，ValuePattern / 选中 / 复制一条都不受影响。
+                -->
+                <Grid>
+                    <TextBox x:Name="LogBox"
+                             IsReadOnly="True"
+                             AcceptsReturn="True"
+                             IsTabStop="True"
+                             MinHeight="0"
+                             BorderThickness="0"
+                             Background="Transparent"
+                             Padding="0"
+                             UseSystemFocusVisuals="False"
+                             TextWrapping="Wrap"
+                             SelectionHighlightColor="#4080D0FF"
+                             FontFamily="Consolas"
+                             FontSize="12"
+                             ContextFlyout="{StaticResource LogContextMenu}"
+                             SelectionChanged="LogLine_SelectionChanged"
+                             Loaded="LogBox_Loaded"
+                             RightTapped="LogBox_RightTapped"
+                             SizeChanged="LogBox_SizeChanged"
+                             ScrollViewer.HorizontalScrollMode="Disabled"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                             ScrollViewer.VerticalScrollMode="Disabled"
+                             ScrollViewer.VerticalScrollBarVisibility="Disabled">
+                        <!--
+                            2026-10-09 第五轮反馈"点击控制台颜色变化太突兀"：聚焦瞬间模板不认
+                            上面的 Background=Transparent，会自己刷上聚焦白底 + 强调色描边
+                            （灰底→纯白 + 绿框，实测见 chk_focus 前后截图）。
+                            这里把聚焦/悬停画刷全部钉成透明、关掉系统焦点框：点击只留光标闪烁。
+                        -->
+                        <TextBox.Resources>
+                            <SolidColorBrush x:Key="TextControlBackgroundFocused" Color="Transparent" />
+                            <SolidColorBrush x:Key="TextControlBackgroundPointerOver" Color="Transparent" />
+                            <SolidColorBrush x:Key="TextControlBorderBrushFocused" Color="Transparent" />
+                            <SolidColorBrush x:Key="TextControlFocusBorderBrush" Color="Transparent" />
+                        </TextBox.Resources>
+                    </TextBox>
+                    <Canvas x:Name="LinkUnderlineLayer"
+                            IsHitTestVisible="False"
+                            Background="Transparent" />
+                </Grid>
+                </ScrollViewer>
+
+                <!--
+                    连接状态 + 延迟：浮在日志区**右上角**（2026-10-09 问题③定稿）。
+                    不占布局行——日志区满高，不再被"状态一行 + 延迟一行"往下顶。
+                    IsHitTestVisible=False：点击/框选全部穿透到下面的 LogBox，纯视觉覆盖。
+                    2026-10-09 用户反馈原配色（#99000000 黑底白字）与程序不搭 → 改用与账号卡片、
+                    自动化面板同一套主题卡片样式（卡片底 + 卡片描边 + 圆角 8 + 主题文字色），
+                    亮/暗色随主题自动切换；实底同样能压住底下的日志文字、保证可读。
+                    文案过长只用省略号截自己；延迟没连上时整段隐藏（IsConnected）。
+                -->
+                <Border HorizontalAlignment="Right"
+                        VerticalAlignment="Top"
+                        Margin="0,-4,6,0"
+                        Padding="10,5"
+                        CornerRadius="8"
+                        IsHitTestVisible="False"
+                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1">
+                    <StackPanel Orientation="Vertical"
+                                HorizontalAlignment="Right">
+                        <TextBlock x:Name="StateTextBlock"
+                                   HorizontalAlignment="Right"
+                                   FontWeight="SemiBold"
+                                   Foreground="{ThemeResource TextFillColorPrimaryBrush}"
+                                   Text="{x:Bind ViewModel.StateText, Mode=OneWay}"
+                                   TextTrimming="CharacterEllipsis" />
+                        <TextBlock HorizontalAlignment="Right"
+                                   FontSize="12"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                   Visibility="{x:Bind ViewModel.IsConnected, Mode=OneWay, Converter={StaticResource BoolToVisibility}}"
+                                   Text="{x:Bind ViewModel.LatencyText, Mode=OneWay}"
+                                   TextTrimming="CharacterEllipsis" />
+                    </StackPanel>
+                </Border>
+            </Grid>
 
             <!-- 命令栏：左“常用命令”下拉、中间输入框、右“发送 / 清空日志”（"复制日志"按钮已按用户要求移除） -->
-            <Grid Grid.Row="4" ColumnSpacing="8">
+            <Grid Grid.Row="3" ColumnSpacing="8">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />

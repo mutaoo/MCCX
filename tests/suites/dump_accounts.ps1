@@ -2,7 +2,9 @@
 $ErrorActionPreference = 'Stop'
 
 $exeDir = "$((Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) + '\MCCX.App\bin\Debug\net10.0-windows10.0.26100.0\win-x64')"
-$keyFile = Join-Path $exeDir 'accounts.key'
+# 2026-10-05：账号库在用户数据目录（程序目录下的 UserData）里
+$dataDir = Join-Path $exeDir 'UserData'
+$keyFile = Join-Path $dataDir 'accounts.key'
 $keyHexPath = Join-Path $env:TEMP 'mccx_key.hex'
 
 $ps5 = @'
@@ -39,5 +41,5 @@ function Show-Accounts([string]$datPath, [string]$label) {
     }
 }
 
-Show-Accounts (Join-Path $exeDir 'accounts.dat') 'current'
+Show-Accounts (Join-Path $dataDir 'accounts.dat') 'current'
 Show-Accounts "$(Join-Path $PSScriptRoot '..\artifacts')\accounts-backup\accounts.dat" 'backup-0928'

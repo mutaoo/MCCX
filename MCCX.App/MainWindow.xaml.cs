@@ -64,6 +64,28 @@ public sealed partial class MainWindow : Window
     /// <summary>启动时读上次的选择：默认浅色（保持既有外观）。</summary>
     private static bool ReadStoredTheme() => UiSettingsStore.ReadDarkMode();
 
+    /// <summary>
+    /// 「设置」子菜单里 Debug 模式开关的初始状态（2026-10-09 需求⑤）。
+    /// 只反映持久化值；真正把开关打进 MCC 是 MCCSession 在构造 McClient 前读同一个标志。
+    /// </summary>
+    private bool ReadStoredDebugMode() => UiSettingsStore.ReadDebugMode();
+
+    /// <summary>
+    /// Debug 模式开关（2026-10-09 需求⑤）：存进 ui-settings.json，对**下一次（重）连**生效
+    /// —— MCC 的 DebugEnabled 在 McClient 构造时读一次，已连上的会话不受影响。
+    /// 2026-10-09 第五轮反馈：状态不再用打勾显示，标签后空一格写「开 / 关」（与开关行一致），
+    /// 存储值是唯一事实源：每次点击都从文件读旧值翻转，不存在界面态与文件态打架。
+    /// </summary>
+    private void DebugModeItem_Click(object sender, RoutedEventArgs e)
+    {
+        bool on = !ReadStoredDebugMode();
+        UiSettingsStore.WriteDebugMode(on);
+        DebugModeItem.Text = DebugModeText(on);
+    }
+
+    /// <summary>「设置」菜单里 Debug 模式的状态文字：标签 + 空格 + 开/关。</summary>
+    private static string DebugModeText(bool on) => on ? "Debug 模式 开" : "Debug 模式 关";
+
     /// <summary>应用主题（不动设置文件，启动时用）。</summary>
     private void ApplyThemeCore(bool darkMode)
     {
@@ -94,7 +116,10 @@ public sealed partial class MainWindow : Window
     /// 系统标题栏按钮（最小化/最大化/关闭）的配色。
     /// <c>ExtendsContentIntoTitleBar=true</c> 时这三个按钮仍由系统绘制，默认跟着**系统**主题走，
     /// 于是暗色模式下窗口右上角会留三块浅色方块（2026-10-05 用户反馈）。
-    /// 这里在暗色时把它们染成与内容区一致的 #121212 + 白字，浅色时清空交回系统（保持原生观感）。
+    /// 这里在暗色时把它们染成与内容区一致的 #121212 + 白字；
+    /// 浅色时**不能**交回系统（null）：那样按钮被画成不透明白块，压在 Mica 标题栏上
+    /// 就是一块块方砖、底色与背景对不上（2026-10-08 用户反馈），改成透明让底色
+    /// 直接透出标题栏背景，观感与内容区连成一片，悬停/按下反馈仍由系统画。
     /// </summary>
     private void ApplyCaptionButtonColors(bool darkMode)
     {
@@ -103,8 +128,8 @@ public sealed partial class MainWindow : Window
             var titleBar = AppWindow.TitleBar;
             if (!darkMode)
             {
-                titleBar.ButtonBackgroundColor = null;
-                titleBar.ButtonInactiveBackgroundColor = null;
+                titleBar.ButtonBackgroundColor = Microsoft.UI.Colors.Transparent;
+                titleBar.ButtonInactiveBackgroundColor = Microsoft.UI.Colors.Transparent;
                 titleBar.ButtonForegroundColor = null;
                 titleBar.ButtonInactiveForegroundColor = null;
                 titleBar.ButtonHoverBackgroundColor = null;
@@ -139,6 +164,9 @@ public sealed partial class MainWindow : Window
     {
         InitializeComponent();
         Instance = this;
+
+        // Debug 模式状态文字回填上次的值（必须在 InitializeComponent 之后：XAML 已建好该 MenuFlyoutItem）
+        DebugModeItem.Text = DebugModeText(ReadStoredDebugMode());
 
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);

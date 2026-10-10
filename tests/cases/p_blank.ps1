@@ -5,6 +5,8 @@ $ErrorActionPreference = 'Stop'
 $exeDir = "$((Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) + '\MCCX.App\bin\Debug\net10.0-windows10.0.26100.0\win-x64')"
 $stash = "$(Join-Path $PSScriptRoot '..\artifacts')\accounts-stash"
 $appDataDirs = @("$env:APPDATA\MCCX", "$env:APPDATA\MccX")
+# 2026-10-05：账号库与配置类文件统一在程序目录的 UserData 子目录里
+$dataDir = Join-Path $exeDir 'UserData'
 $files = @('accounts.dat', 'accounts.key')
 
 function Find-EditByIdSafe {
@@ -27,7 +29,7 @@ function Hide-AccountFiles {
     New-Item -ItemType Directory -Path $stash | Out-Null
     $i = 0
     foreach ($n in $files) {
-        $src = Join-Path $exeDir $n
+        $src = Join-Path $dataDir $n
         if (Test-Path $src) { Copy-Item $src (Join-Path $stash $n) -Force; Remove-Item $src -Force }
     }
     foreach ($d in $appDataDirs) {
@@ -39,8 +41,11 @@ function Hide-AccountFiles {
 function Restore-AccountFiles {
     foreach ($n in $files) {
         $s = Join-Path $stash $n
-        $d = Join-Path $exeDir $n
-        if (Test-Path $s) { Copy-Item $s $d -Force }
+        $d = Join-Path $dataDir $n
+        if (Test-Path $s) {
+            if (-not (Test-Path $dataDir)) { New-Item -ItemType Directory -Path $dataDir | Out-Null }
+            Copy-Item $s $d -Force
+        }
     }
     $i = 0
     foreach ($d in $appDataDirs) {

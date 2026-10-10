@@ -84,7 +84,8 @@ function Save-WindowShot([string]$Path, [bool]$CenterOnly = $false) {
     return [Math]::Round($sum / $n, 1)
 }
 
-$settingsPath = Join-Path (Split-Path $script:AppExe) 'ui-settings.json'
+# 2026-10-05：设置文件在用户数据目录（程序目录下的 UserData）里
+$settingsPath = Join-Path (Join-Path (Split-Path $script:AppExe) 'UserData') 'ui-settings.json'
 $settingsBak = "$settingsPath.g_theme_bak"
 $hadSettings = Test-Path $settingsPath
 # 2026-10-05：上一轮跑测时若被强杀（进程残留/中途 Ctrl-C），ui-settings.json 会留下

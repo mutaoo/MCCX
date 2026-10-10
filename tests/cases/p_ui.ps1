@@ -23,11 +23,11 @@ $null = Start-App
 Save-Foreground
 Write-Host "--- app up ---"
 
-# 1) 日志里显示账号文件所在目录
-$hit = Wait-LogContains -Pattern '账号文件：' -TimeoutMs 15000
+# 1) 日志里显示用户数据目录（账号库与配置类文件都在 UserData 文件夹里，2026-10-05 起）
+$hit = Wait-LogContains -Pattern '用户数据目录：' -TimeoutMs 15000
 $line = ''
-if ($hit) { $line = (@($hit -split "`n") | Where-Object { $_ -match '账号文件：' } | Select-Object -First 1) }
-Assert-True ($hit -and ($line -match '账号文件：')) '日志显示账号文件路径' $line
+if ($hit) { $line = (@($hit -split "`n") | Where-Object { $_ -match '用户数据目录：' } | Select-Object -First 1) }
+Assert-True ($hit -and ($line -match '用户数据目录：')) '日志显示用户数据目录' $line
 Write-Host "  -> $line"
 
 # 2) 功能开关仍在同一行且可读状态
@@ -115,12 +115,14 @@ Assert-True ($null -eq $copyBtn) '底部"复制日志"按钮已移除（改用�
 $logList = Get-LogList
 $editCond = New-Object System.Windows.Automation.PropertyCondition(
     $script:AE::ControlTypeProperty, $script:CT::Edit)
-$firstItem = @(Get-ListItems $logList) | Select-Object -First 1
-$logEdit = $null
-if ($firstItem) {
-    $logEdit = $firstItem.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $editCond)
-}
-Assert-True ($null -ne $logEdit) '日志行是可框选的只读输入框（行内自由选择文字）' '第一行里没有 Edit 控件'
+# 2026-10-06：日志区是 ItemsRepeater，没有 ListView 那样的"列表项"UIA 节点，
+# Get-ListItems 取不到东西；直接找 LogScrollHost 下的 Edit（每行一个只读 TextBox）。
+$logEdits = $logList.FindAll([System.Windows.Automation.TreeScope]::Descendants, $editCond)
+Assert-True ($logEdits.Count -gt 0) '日志行是可框选的只读输入框（行内自由选择文字）' ("LogScrollHost 下 Edit 数量=" + $logEdits.Count)
+
+$firstLogText = ''
+if ($logEdits.Count -gt 0) { $firstLogText = Get-EditValue $logEdits.Item(0) }
+Assert-True (-not [string]::IsNullOrWhiteSpace($firstLogText)) '第一行日志文本能从只读输入框里读出来' $firstLogText
 Assert-True ((Get-RecentLogText -Max 5).Length -gt 0) '日志文本仍能读到（右键复制的内容来源）'
 
 $alive = [bool](Get-Process -Name MCCX -ErrorAction SilentlyContinue)

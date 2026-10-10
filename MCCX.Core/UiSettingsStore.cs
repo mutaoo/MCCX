@@ -4,7 +4,8 @@ using System.Text.Json.Serialization;
 namespace MCCX.Core;
 
 /// <summary>
-/// 界面级全局设置的落盘（<c>ui-settings.json</c>，与账号库同一目录）。
+/// 界面级全局设置的落盘（<c>ui-settings.json</c>，在用户数据目录 <c>UserData</c> 里，
+/// 与账号库同目录）。
 ///
 /// 与账号无关、也不该进账号库（那是按账号分条的加密数据），所以单独一个明文小文件；
 /// 里面没有敏感信息（暗色模式开关、账号是否按服务器分组）。
@@ -19,6 +20,14 @@ public static class UiSettingsStore
         /// <summary>左侧账号列表是否按服务器分组（2026-10-05 用户要求，默认关）。</summary>
         [JsonPropertyName("groupAccountsByServer")]
         public bool GroupAccountsByServer { get; set; }
+
+        /// <summary>
+        /// 调试模式（2026-10-09 用户要求：左上角「设置」子菜单里的开关）。
+        /// 打开后 MCC 的 DebugMessages + PacketDebugMessages 一起开，
+        /// 网络循环退出原因、包级收发等诊断信息才会流到日志区（默认关，避免刷屏）。
+        /// </summary>
+        [JsonPropertyName("debugMode")]
+        public bool DebugMode { get; set; }
     }
 
     private const string FileName = "ui-settings.json";
@@ -30,7 +39,10 @@ public static class UiSettingsStore
 
     private static readonly object Gate = new();
 
-    /// <summary>设置文件路径（账号库同目录：exe 目录优先，不可写时已由 AccountStore 退到 %APPDATA%）。</summary>
+    /// <summary>
+    /// 设置文件路径：在用户数据目录（程序目录下的 UserData）里，与账号库同目录，
+    /// 升级时和账号库一起被那个文件夹带走。
+    /// </summary>
     public static string FilePath
     {
         get
@@ -38,7 +50,8 @@ public static class UiSettingsStore
             if (!OperatingSystem.IsWindows())
                 throw new PlatformNotSupportedException("MCCX 仅在 Windows 上运行。");
 
-            return Path.Combine(AccountStore.DefaultDirectory, FileName);
+            UserDataPaths.EnsureReady();
+            return UserDataPaths.PathFor(FileName);
         }
     }
 
@@ -75,7 +88,7 @@ public static class UiSettingsStore
         {
             lock (Gate)
             {
-                Directory.CreateDirectory(AccountStore.DefaultDirectory);
+                System.IO.Directory.CreateDirectory(UserDataPaths.Directory);
 
                 // 读-改-写：两项设置共用一个文件，别把对方那项抹掉
                 Data data = Read();
@@ -104,4 +117,10 @@ public static class UiSettingsStore
 
     /// <summary>写"账号按服务器分组"开关。</summary>
     public static void WriteGroupAccountsByServer(bool enabled) => Write(d => d.GroupAccountsByServer = enabled);
+
+    /// <summary>读"调试模式"开关；没有文件 / 文件坏了一律按关（不刷屏）。</summary>
+    public static bool ReadDebugMode() => Read().DebugMode;
+
+    /// <summary>写"调试模式"开关。</summary>
+    public static void WriteDebugMode(bool enabled) => Write(d => d.DebugMode = enabled);
 }

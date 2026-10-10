@@ -79,6 +79,20 @@ public sealed class AccountProfile
     public ReconnectOptions? Reconnect { get; set; }
 
     /// <summary>
+    /// 各功能的"过程日志"开关（2026-10-08 需求：Bot 日志刷屏，每个功能可单独关）。
+    /// <para>
+    /// 键 = 功能标识（<c>MCCX_App.ViewModels.FeatureLogKeys</c>），值 = <b>是否显示该功能的过程日志</b>。
+    /// 没有记录 = 显示（老账号库与新账号默认全开），所以老库读进来不会失败。
+    /// </para>
+    /// <para>
+    /// 关掉只屏蔽"过程日志"（攻击了谁、破坏了哪块方块这类高频行）；
+    /// <b>功能的开关状态日志照常推送</b>，否则用户看不出功能开没开（见 AccountViewModel.IsStateLog）。
+    /// 每个账号各存一份。
+    /// </para>
+    /// </summary>
+    public Dictionary<string, bool> FeatureLogSwitches { get; set; } = [];
+
+    /// <summary>
     /// 视角恢复开关。历史遗留字段：功能已于 2026-10-04 移除（进服沿用服务器记住的朝向、
     /// 本地不再存视角，与 MCC 一致；2026-10-05 起另有"进服头 10 秒的纠正包守卫"，
     /// 那不依赖任何账号字段），代码不再读写它的语义，仅保留序列化兼容（老账号库里有这个字段）。
@@ -138,6 +152,7 @@ public sealed class AccountProfile
         ServerFilterShowPrefix = other.ServerFilterShowPrefix;
         ServerFilterBlockPrefix = other.ServerFilterBlockPrefix;
         Reconnect = other.Reconnect;
+        FeatureLogSwitches = other.FeatureLogSwitches;
         ViewRestoreEnabled = other.ViewRestoreEnabled;
         LastUsedAt = other.LastUsedAt;
     }

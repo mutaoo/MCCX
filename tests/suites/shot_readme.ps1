@@ -41,9 +41,12 @@ function Get-FileMd5([string]$Path) { (Get-FileHash $Path -Algorithm MD5).Hash }
 
 # 三处缺一不可：只删 exe 库的话，程序启动会把 %APPDATA% 旧库（含真实账号）迁回列表
 $swapSpecs = @(
-    @{ Label = 'exe';      Dir = $exeDir }
-    @{ Label = 'appdata';  Dir = (Join-Path $env:APPDATA 'MCCX') }
-    @{ Label = 'mccx-old'; Dir = (Join-Path $env:APPDATA 'MccX') }
+    # 2026-10-05：账号库在程序目录的 UserData 子目录里（UserData 为空时也扫一遍 exe 根，
+    # 兼容升级前遗留的散落文件）
+    @{ Label = 'exe-userdata'; Dir = (Join-Path $exeDir 'UserData') }
+    @{ Label = 'exe';          Dir = $exeDir }
+    @{ Label = 'appdata';      Dir = (Join-Path $env:APPDATA 'MCCX') }
+    @{ Label = 'mccx-old';     Dir = (Join-Path $env:APPDATA 'MccX') }
 )
 $swaps = @()
 $seenDat = @{}
@@ -199,7 +202,7 @@ function Get-ListTexts {
 # 真实账号/服务器敏感词——任何一处出现都说明截图会泄密，直接失败。
 # 大小写敏感 + 字母边界：精确抓真实账号名（Player/Play/Yuki_Suou 等实名），
 # 既不被普通英文（ping 回显 Players: 0/10）误伤，也不会因下划线（Yuki_Suou 里的 \b 失效）漏抓
-$sensitive = @('simpfun', 'mcyyy', 'gugugaga', 'lemon', 'Yuki', 'Player', 'Play', 'TestBob', '24840', '25599')
+$sensitive = @('simpfun', 'mcyyy', 'gugugaga', 'lemon', 'Yuki', 'Player', 'Play', 'TestBob', '24840', '11724')
 function Assert-NoSensitive([string]$Where, [string]$Text) {
     foreach ($w in $sensitive) {
         $pat = '(?<![A-Za-z])' + [regex]::Escape($w) + '(?![A-Za-z])'

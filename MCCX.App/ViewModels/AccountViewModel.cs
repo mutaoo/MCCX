@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Globalization;
+using System.Text.RegularExpressions;
 using System.Windows.Input;
 using MCCX.Core;
 using MCCX.Core.Dialogs;
@@ -34,6 +35,12 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
     private string _minecraftVersion;
     private string _commandInput = string.Empty;
     private string _stateText = "未连接";
+
+    /// <summary>连接延迟文案（2026-10-08 需求：状态行下方显示当前账号的延迟）。</summary>
+    private string _latencyText = "延迟 --";
+
+    /// <summary>延迟探测循环的取消源（连上开、断开停）。</summary>
+    private CancellationTokenSource? _latencyCts;
     private bool _isConnected;
     private bool _disposed;
 
@@ -314,6 +321,16 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
             if (SetProperty(ref _stateText, value))
                 OnPropertyChanged(nameof(StateBadge));
         }
+    }
+
+    /// <summary>
+    /// 连接延迟：状态行下方那一行（2026-10-08 需求）。
+    /// 没连上或没测到时是"延迟 --"，界面上靠 <c>IsConnected</c> 控制整行显隐。
+    /// </summary>
+    public string LatencyText
+    {
+        get => _latencyText;
+        private set => SetProperty(ref _latencyText, value);
     }
 
     /// <summary>
@@ -839,6 +856,103 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
             _serverFilterShowPrefix,
             _serverFilterBlockPrefix);
 
+    /// <summary>
+    /// —— 各功能的“过程日志”开关（2026-10-08 需求：Bot 日志刷屏，每个功能可单独关）——
+    ///
+    /// 存在 <c>AccountProfile.FeatureLogSwitches</c> 里，<b>每个账号各存一份</b>。
+    /// 缺键视为“开”，所以老账号库读进来就是全开，不需要迁移。
+    /// </summary>
+    private bool GetLogSwitch(string key) =>
+        !_profile.FeatureLogSwitches.TryGetValue(key, out bool show) || show;
+
+    /// <summary>写开关；真的变了才落盘（返回 true），并把变更转给账号参数的节流保存。</summary>
+    private bool SetLogSwitch(string key, bool show)
+    {
+        if (GetLogSwitch(key) == show)
+            return false;
+
+        _profile.FeatureLogSwitches[key] = show;
+        NotifyParametersChanged();
+        return true;
+    }
+
+    /// <summary>自动砍怪的过程日志。</summary>
+    public bool AttackLogEnabled
+    {
+        get => GetLogSwitch(FeatureLogKeys.Attack);
+        set
+        {
+            if (SetLogSwitch(FeatureLogKeys.Attack, value))
+                OnPropertyChanged(nameof(AttackLogEnabled));
+        }
+    }
+
+    /// <summary>鼠标按键控制的过程日志。</summary>
+    public bool MouseLogEnabled
+    {
+        get => GetLogSwitch(FeatureLogKeys.Mouse);
+        set
+        {
+            if (SetLogSwitch(FeatureLogKeys.Mouse, value))
+                OnPropertyChanged(nameof(MouseLogEnabled));
+        }
+    }
+
+    /// <summary>自动钓鱼（MCC 内置 Bot）的过程日志。</summary>
+    public bool FishingLogEnabled
+    {
+        get => GetLogSwitch(FeatureLogKeys.Fishing);
+        set
+        {
+            if (SetLogSwitch(FeatureLogKeys.Fishing, value))
+                OnPropertyChanged(nameof(FishingLogEnabled));
+        }
+    }
+
+    /// <summary>自动补充的过程日志。</summary>
+    public bool RefillLogEnabled
+    {
+        get => GetLogSwitch(FeatureLogKeys.Refill);
+        set
+        {
+            if (SetLogSwitch(FeatureLogKeys.Refill, value))
+                OnPropertyChanged(nameof(RefillLogEnabled));
+        }
+    }
+
+    /// <summary>自动行走的过程日志。</summary>
+    public bool WalkLogEnabled
+    {
+        get => GetLogSwitch(FeatureLogKeys.Walk);
+        set
+        {
+            if (SetLogSwitch(FeatureLogKeys.Walk, value))
+                OnPropertyChanged(nameof(WalkLogEnabled));
+        }
+    }
+
+    /// <summary>视角（含进服朝向守卫）的过程日志。</summary>
+    public bool ViewLogEnabled
+    {
+        get => GetLogSwitch(FeatureLogKeys.View);
+        set
+        {
+            if (SetLogSwitch(FeatureLogKeys.View, value))
+                OnPropertyChanged(nameof(ViewLogEnabled));
+        }
+    }
+
+    /// <summary>自动重连的过程日志。</summary>
+    public bool ReconnectLogEnabled
+    {
+        get => GetLogSwitch(FeatureLogKeys.Reconnect);
+        set
+        {
+            if (SetLogSwitch(FeatureLogKeys.Reconnect, value))
+                OnPropertyChanged(nameof(ReconnectLogEnabled));
+        }
+    }
+
     /// <summary>断线自动重连开关。</summary>
     public bool ReconnectEnabled
     {
@@ -1279,6 +1393,9 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
             Fishing = BuildFishingOptions(),
             AutoRefillEnabled = _autoRefillEnabled,
             AutoWalkEnabled = _autoWalkEnabled,
+            // 功能日志开关必须一起带走：漏了这里，保存时会用空字典覆盖，
+            // 表现就是“开关关了，重新打开程序又全开”。
+            FeatureLogSwitches = new Dictionary<string, bool>(_profile.FeatureLogSwitches),
             ServerFilterMode = Math.Clamp(_serverFilterModeIndex, 0, 4),
             ServerFilterShowPrefix = _serverFilterShowPrefix,
             ServerFilterBlockPrefix = _serverFilterBlockPrefix,
@@ -1362,8 +1479,85 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
             };
 
             if (state == MCCConnectionState.Connected)
+            {
+                LatencyText = "延迟 --";
+                StartLatencyLoop();
                 Connected?.Invoke(this);
+            }
+            else
+            {
+                StopLatencyLoop();
+                LatencyText = "延迟 --";
+            }
         });
+    }
+
+    /// <summary>
+    /// 连上后每 10 秒探一次延迟（2026-10-08 需求：连接状态下方显示当前账号的延迟）。
+    ///
+    /// 探测放 App 层而不是会话里：IAccountSession 有进程内（MCCSession）和子进程
+    /// （RunnerProcess）两个实现，放 App 层两种模式都成立，也不用动接口和 IPC。
+    /// 探测走 <see cref="ServerLatency"/> 的静默状态 ping，成功才改文案、失败保持"--"，
+    /// 全程不产生日志行（不能自己制造"日志太频繁"）。
+    /// </summary>
+    private void StartLatencyLoop()
+    {
+        StopLatencyLoop();
+
+        string host = ServerHost;
+        if (!ushort.TryParse(ServerPort, out ushort port))
+            port = 25565;
+
+        var cts = new CancellationTokenSource();
+        _latencyCts = cts;
+
+        _ = Task.Run(async () =>
+        {
+            while (!cts.IsCancellationRequested)
+            {
+                long ms = -1;
+                try
+                {
+                    ms = await Task.Run(() => ServerLatency.Probe(host, port, 3000), cts.Token)
+                        .ConfigureAwait(false);
+                }
+                catch
+                {
+                    // 取消 / 探测异常：保持 "--"
+                }
+
+                if (cts.IsCancellationRequested)
+                    break;
+
+                long result = ms;
+                _dispatcherQueue.TryEnqueue(() =>
+                {
+                    if (!cts.IsCancellationRequested)
+                        LatencyText = result < 0 ? "延迟 --" : $"延迟 {result} ms";
+                });
+
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(10), cts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+            }
+        }, CancellationToken.None);
+    }
+
+    /// <summary>
+    /// 停探测：只 Cancel 不 Dispose——后台循环还攥着这个 token，Dispose 会让它抛 ObjectDisposedException。
+    /// </summary>
+    private void StopLatencyLoop()
+    {
+        CancellationTokenSource? cts = Interlocked.Exchange(ref _latencyCts, null);
+        if (cts is not null)
+        {
+            try { cts.Cancel(); } catch { /* 已经取消过，忽略 */ }
+        }
     }
 
     private void OnDialogRequested(MccDialogInfo info)
@@ -1402,11 +1596,89 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
     /// <summary>主界面外壳往这个账号的日志里写一行系统提示（账号为空时静默丢弃）。</summary>
     public void WriteNote(string text) => AppendLog(text);
 
+    /// <summary>
+    /// 日志行开头<b>连续的</b> <c>[标签]</c> 链（贪婪，取到第一个非 <c>[…]</c> 处为止）：
+    /// § 颜色码已被 GetVerbatim 剥掉，这里直接找方括号。
+    /// </summary>
+    private static readonly Regex FeatureTagChainRegex =
+        new(@"^(?:\s*\[([^\]]+)\])+", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    /// <summary>从行首的 <c>[标签]</c> 链里取出<b>所有</b>标签文本（如 “MCC”“AutoFishing”）。</summary>
+    private static readonly Regex FeatureTagPieceRegex =
+        new(@"\[\s*([^\]]+?)\s*\]", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// “开关状态类”文案：功能日志被关掉时<b>仍然要推送</b>，否则用户关了之后看不出功能开没开。
+    ///
+    /// 只认状态/结果类动词，不放行高频过程行——
+    /// 例如“§7[砍怪] 攻击僵尸（2.3 格）”不含这些词会被吞，而“§a[砍怪] 已开启：…” 一定留下。
+    /// </summary>
+    private static readonly Regex FeatureStateLogRegex = new(
+        "已开启|已关闭|已就绪|已停用|自动停用|已更新|已取消|不会产生|不生效|需要|停止",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// 这行要不要因为“某功能的日志开关被关掉”而丢弃。
+    ///
+    /// 两条通路：
+    /// 1. <b>带 [标签] 的 Bot 日志</b>——沿行首连续的 <c>[标签]</c> 链逐个查
+    ///    <see cref="FeatureLogKeys.TagToKey"/> 认功能。必须扫整条链：
+    ///    MCC 内置 Bot 的行形如“[MCC] [AutoFishing] …”，MCCX 自己的形如
+    ///    “[MCC] [MouseControlBot] [鼠标] …”，行首第一个标签常常是 [MCC]/[MouseControlBot]
+    ///    这类<b>非功能</b>前缀，只认第一个标签会让过滤永远落空（2026-10-09 用户反馈）。
+    ///    任一标签在表里即命中；都不在表（[MCCX]、[公告]…）的一律放行，
+    ///    关砍怪日志不会顺手吃掉服务器公告。
+    /// 2. <b>自动重连的进度提示</b>——会话侧日志没有标签，只能按特征词认：
+    ///    “§e连接断开，3.0 秒后自动重连（第 1/无限次）…” 这类在链路抖动时会刷屏，
+    ///    但“自动重连已开启/已取消/已连续失败 N 次”是状态与结果，不在此列、始终保留。
+    /// </summary>
+    private bool IsMutedByFeatureLogSwitch(string text)
+    {
+        if (text.Length == 0)
+            return false;
+
+        if (TryGetFeatureKeyFromLeadingTags(text, out string? key) && key is not null)
+            return !GetLogSwitch(key) && !FeatureStateLogRegex.IsMatch(text);
+
+        return !GetLogSwitch(FeatureLogKeys.Reconnect)
+            && text.Contains("秒后自动重连", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 取行首<b>连续</b> <c>[标签]</c> 链里第一个能在 <see cref="FeatureLogKeys.TagToKey"/> 命中的功能键。
+    /// 只看行首连续链（一旦遇到非 <c>[…]</c> 内容就停），避免误把正文里的方括号当标签。
+    /// </summary>
+    private static bool TryGetFeatureKeyFromLeadingTags(string text, out string? key)
+    {
+        key = null;
+
+        // 先确认行首确实起于一串 [标签]（链式匹配），再在该链覆盖的前缀内逐个取标签查表。
+        Match chain = FeatureTagChainRegex.Match(text);
+        if (!chain.Success || chain.Index != 0)
+            return false;
+
+        // chain.Value 就是行首那串连续的 [标签]（可能带前导空格已被 regex 吃掉）
+        foreach (Match piece in FeatureTagPieceRegex.Matches(chain.Value))
+        {
+            if (FeatureLogKeys.TagToKey.TryGetValue(piece.Groups[1].Value, out string? found))
+            {
+                key = found;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private void AppendLog(string rawText)
     {
         foreach (string line in rawText.Replace("\r\n", "\n").Split('\n'))
         {
             string text = ChatBot.GetVerbatim(line);
+
+            // 功能日志开关（2026-10-08 需求）：吞过程日志、留开关状态。
+            if (IsMutedByFeatureLogSwitch(text))
+                continue;
 
             // 连续重复合并（需求：多条相同日志不再刷屏）：
             // 与上一条完全相同的行不新增条目，直接把上一条就地更新成 “原文 xN”。
@@ -1433,6 +1705,7 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
             return;
 
         _disposed = true;
+        StopLatencyLoop(); // 2026-10-08：关掉延迟探测循环，别让它探着已断开的地址
         _session.LogReceived -= OnLogReceived;
         _session.StateChanged -= OnStateChanged;
         _session.DialogRequested -= OnDialogRequested;

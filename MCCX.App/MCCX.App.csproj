@@ -7,14 +7,14 @@
     <!-- 程序名就是 MCCX：exe、进程名、窗口标题都不带前后缀（MCCX.App 只是工程目录名） -->
     <AssemblyName>MCCX</AssemblyName>
     <!--
-      版本号（当前 1.0.1.beta.2）：
+      版本号（当前 1.0.2.beta.3）：
       - InformationalVersion = 完整版本号，只在 exe 属性「产品版本」里体现，
         界面与 README 均不显示版本号（用户要求，主页保持纯 MCCX 标题）；
-      - 文件/程序集版本只取纯数字段 1.0.1（预发布后缀含点与字母，进不了 AssemblyVersion/FileVersion）
-      升版本时只改 InformationalVersion 一处即可。
+      - 文件/程序集版本只取纯数字段 1.0.2（预发布后缀含点与字母，进不了 AssemblyVersion/FileVersion）
+      升 beta 后缀只改 InformationalVersion 一处；升版本主体（如 1.0.1→1.0.2）时 Version 同步改。
     -->
-    <Version>1.0.1</Version>
-    <InformationalVersion>1.0.1.beta.2</InformationalVersion>
+    <Version>1.0.2</Version>
+    <InformationalVersion>1.0.2.beta.3</InformationalVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon Condition="Exists('Assets\AppIcon.ico')">Assets\AppIcon.ico</ApplicationIcon>

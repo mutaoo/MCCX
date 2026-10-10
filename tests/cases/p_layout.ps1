@@ -65,8 +65,8 @@ if ($ap) {
 
 $lines.Add('')
 $lines.Add('===== 日志区 =====')
-$ll = Find-ById $root 'LogList'
-if ($ll) { $lines.Add(("LogList {0}" -f (Rect $ll.Current.BoundingRectangle))) } else { $lines.Add('LogList MISSING') }
+$ll = Find-ById $root 'LogBox'
+if ($ll) { $lines.Add(("LogBox {0}" -f (Rect $ll.Current.BoundingRectangle))) } else { $lines.Add('LogBox MISSING') }
 
 $lines.Add('')
 $lines.Add('===== 打开“自动砍怪选项”弹层 =====')

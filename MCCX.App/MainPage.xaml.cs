@@ -24,6 +24,15 @@ namespace MCCX_App;
 public sealed partial class MainPage : Page
 {
     /// <summary>
+    /// 上一次 ViewChanged 时视图的垂直偏移。用来判断这次是"往上翻"还是"被自动跟随往下拽"。
+    ///
+    /// <para>2026-10-06：原来靠比对 <c>_logScrollTarget</c> 与实际偏移、或落在"自己滚动的时间窗"里
+    /// 来区分自己和用户，两者都会误判（详见 <see cref="LogScrollViewer_ViewChanged"/>）。
+    /// 方向判据没这个歧义，所以这里只记上一次偏移值。</para>
+    /// </summary>
+    private double _logLastOffset;
+
+    /// <summary>
     /// 用户手动滚上去看历史后，暂时不再自动跟随到底部；
     /// 一旦自己滚回底部附近（≤ 这个距离），恢复自动跟随。0 = 一直跟随。
     /// </summary>
@@ -37,13 +46,6 @@ public sealed partial class MainPage : Page
     /// <summary>用户正在翻历史：期间新日志不再把视图拽到底部。</summary>
     private bool _logFollowPaused;
 
-    /// <summary>
-    /// 最近一次由代码发起的滚动目标。用来把"我们自己滚的"和"用户上翻"分开：
-    /// 只要视图还停在目标附近（或还在底部），就绝不当成用户上翻 —— 否则
-    /// 布局没算完导致 ChangeView 被钳住的那一次，会被误判成用户操作，跟随从此再也不开。
-    /// </summary>
-    private double _logScrollTarget = double.NaN;
-
     /// <summary>贴底重试的剩余次数（刚插入的行还没参与布局时，下一帧再补滚一次）。</summary>
     private int _logSettlePasses;
 
@@ -54,6 +56,18 @@ public sealed partial class MainPage : Page
     private const long LogLayoutFollowIntervalMs = 60;
 
     private long _logLayoutFollowTicks;
+
+    /// <summary>重建文本后布局回弹期（毫秒），期间不追底，见 <see cref="_logFollowBlockedUntilTicks"/>。</summary>
+    private const int LogRebuildFollowQuietMs = 80;
+
+    /// <summary>
+    /// 追底阻断截止时刻（TickCount64）。2026-10-09 ⑨：Text= 之后布局会来回弹
+    /// （实测 ActualHeight 1180→1265→1180→…），回弹期贴底会被瞬时回退的 extent
+    /// 钳掉几十像素、再由后续跟随追回——肉眼可见的"抖一下"。挡住
+    /// <see cref="LogRebuildFollowQuietMs"/> 再追，偏移就只剩单向上行
+    /// （与正常日志增长跟随同一个观感）。窗口关闭时的 Settle 会补贴底。
+    /// </summary>
+    private long _logFollowBlockedUntilTicks;
 
     private ObservableCollection<LogEntry>? _hookedLogs;
 
@@ -209,7 +223,7 @@ public sealed partial class MainPage : Page
         // （它就是显式的 LogScrollHost，滚到底 = 跟着最新一行）。
         DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
-            _logScrollViewer ??= LogScrollHost ?? FindScrollViewer(LogList);
+            _logScrollViewer ??= ResolveLogScrollHost();
 
             DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
             {
@@ -223,17 +237,36 @@ public sealed partial class MainPage : Page
         });
     }
 
+    /// <summary>
+    /// 把日志集合挂到本页（换账号 = 换一份集合）并整份灌进 <see cref="LogBox"/>。
+    ///
+    /// 两层通知：集合本身（增删 / 清空）走 <see cref="OnLogsCollectionChanged"/>；
+    /// 单条日志**就地改文本**（连续重复合并成"原文 xN"）走 LogEntry.PropertyChanged——
+    /// 合并不增删条目，只听集合会漏掉计数刷新。
+    ///
+    /// 2026-10-08 起控制台是一个大只读 TextBox，不再有 ItemsRepeater 逐行渲染，
+    /// 所以"集合 → 界面"必须在这里手动重建文本。
+    /// </summary>
     private void HookLogs()
     {
         ObservableCollection<LogEntry> logs = ViewModel.Logs;
-        if (ReferenceEquals(_hookedLogs, logs))
-            return;
+        if (!ReferenceEquals(_hookedLogs, logs))
+        {
+            if (_hookedLogs is not null)
+            {
+                _hookedLogs.CollectionChanged -= OnLogsCollectionChanged;
+                foreach (LogEntry entry in _hookedLogs)
+                    entry.PropertyChanged -= OnLogEntryTextChanged;
+            }
 
-        if (_hookedLogs is not null)
-            _hookedLogs.CollectionChanged -= OnLogsCollectionChanged;
+            _hookedLogs = logs;
+            _hookedLogs.CollectionChanged += OnLogsCollectionChanged;
+            foreach (LogEntry entry in _hookedLogs)
+                entry.PropertyChanged += OnLogEntryTextChanged;
+        }
 
-        _hookedLogs = logs;
-        _hookedLogs.CollectionChanged += OnLogsCollectionChanged;
+        // 刚挂上、换账号都要画一次；换账号顺带上一个账号留下的选区清掉
+        RebuildLogText(clearSelection: true);
     }
 
     /// <summary>“添加账号”弹窗：窗口是视图层的事，填完把结果交给 ViewModel 入库并开新会话。</summary>
@@ -328,7 +361,7 @@ public sealed partial class MainPage : Page
 
     private void OnPageLoaded(object sender, RoutedEventArgs e)
     {
-        _logScrollViewer ??= FindScrollViewer(LogList);
+        _logScrollViewer ??= ResolveLogScrollHost();
 
         // 首次打开也要落在最新一行，不能停在开机那几条老日志上
         ForceScrollLogToEnd();
@@ -400,10 +433,27 @@ public sealed partial class MainPage : Page
 
     /// <summary>
     /// 一条日志可能拆成多行、MCC 又会成批刷日志，CollectionChanged 会在一帧内连发几十次。
-    /// 以前每次都 ScrollIntoView，列表反复重排导致闪烁；这里合并成每帧最多滚一次。
+    /// 以前每次都 ScrollIntoView，列表反复重排导致闪烁；这里合并成每帧最多滚一次——
+    /// <b>文本重建同样按帧合并</b>（见 <see cref="MarkLogTextDirty"/>）。
     /// </summary>
     private void OnLogsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
+        // 新条目接上"合并计数就地刷新"的通知；被裁掉的旧条目摘掉。
+        // Reset（清空日志）时 OldItems 为空——那批条目已无人引用，随条目一起被 GC 收走，不会漏。
+        if (e.NewItems is not null)
+        {
+            foreach (LogEntry entry in e.NewItems.OfType<LogEntry>())
+                entry.PropertyChanged += OnLogEntryTextChanged;
+        }
+
+        if (e.OldItems is not null)
+        {
+            foreach (LogEntry entry in e.OldItems.OfType<LogEntry>())
+                entry.PropertyChanged -= OnLogEntryTextChanged;
+        }
+
+        MarkLogTextDirty();
+
         if (_logScrollPending)
             return;
 
@@ -412,12 +462,99 @@ public sealed partial class MainPage : Page
             _logScrollPending = false;
     }
 
+    /// <summary>日志文本已经变了、还没写进 <see cref="LogBox"/>。</summary>
+    private bool _logTextDirty;
+
+    /// <summary>文本重绘已入队（CollectionChanged 一帧几十次，不能一次次入队）。</summary>
+    private bool _logTextQueued;
+
+    /// <summary>某条日志的展示文本被就地改了（重复合并成"原文 xN"）→ 需要重画。</summary>
+    private void OnLogEntryTextChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(LogEntry.Text))
+            MarkLogTextDirty();
+    }
+
+    /// <summary>
+    /// 标记"文本要重画"，按帧合并成一次 <see cref="FlushLogText"/>。
+    /// </summary>
+    private void MarkLogTextDirty()
+    {
+        _logTextDirty = true;
+        if (_logTextQueued)
+            return;
+
+        _logTextQueued = true;
+        if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, FlushLogText))
+            _logTextQueued = false;
+    }
+
+    /// <summary>
+    /// 把积累的文本变更写进 <see cref="LogBox"/>。
+    ///
+    /// <b>指针正按在日志区时一律延后</b>：设置 Text 会把当前选区清掉，正在拖的那次框选会当场作废
+    /// ——这与"自动跟随挪视图"是同一类事故，用户 2026-10-06 / 2026-10-08 反馈的正是它。
+    /// 松手（LogBox_PointerReleased）和下一批日志会接手，不会漏画。
+    /// </summary>
+    private void FlushLogText()
+    {
+        _logTextQueued = false;
+        if (!_logTextDirty)
+            return;
+
+        if (LogPointerPressed)
+            return; // 保持脏标记，松手或下一批日志再画
+
+        RebuildLogText(clearSelection: false);
+    }
+
+    /// <summary>
+    /// 从 LogEntry 全量重建 <see cref="LogBox"/> 的文本
+    /// （有界：AccountViewModel 只留 1000+100 行，全量重建的代价是一次几十 KB 的 join）。
+    ///
+    /// 写入前后处理选区：日志只会在<b>末尾增行</b>或<b>开头裁行</b>，
+    /// 末尾增行时旧下标完全有效——选中状态得以保留，用户拖完选区再按 Ctrl+C 不会扑空。
+    /// </summary>
+    private void RebuildLogText(bool clearSelection)
+    {
+        if (_hookedLogs is not { } logs)
+            return;
+
+        var sb = new System.Text.StringBuilder();
+        foreach (LogEntry entry in logs)
+        {
+            if (sb.Length > 0)
+                sb.Append('\n');
+
+            sb.Append(entry.Text);
+        }
+
+        int selStart = clearSelection ? 0 : LogBox.SelectionStart;
+        int selLength = clearSelection ? 0 : LogBox.SelectionLength;
+
+        // 2026-10-09 ⑨：Text= / Select 会触发原生 caret 追逐（异步、会把视口拽离底部）——开抑制窗口
+        BeginSuppressBringIntoView();
+        LogBox.Text = sb.ToString();
+        _logTextDirty = false;
+
+        if (selStart <= LogBox.Text.Length)
+            LogBox.Select(selStart, Math.Min(selLength, LogBox.Text.Length - selStart));
+
+        // 需求④：文本变了，链接位置也变 → 重画链接下划线（不改 Text，ValuePattern 不受影响）。
+        MarkLinkUnderlinesDirty();
+
+        // 2026-10-09 ⑨：Text= 期间 extent 可能瞬时回退把视口钳离底部；
+        // 跟随未暂停（用户本就在底）就补一轮贴底重试把它按回去（Settle 回调自带暂停判断）。
+        if (!_logFollowPaused)
+            ScheduleScrollSettle();
+    }
+
     private void FollowLogToEnd()
     {
         _logScrollPending = false;
         _logSettlePasses = 0; // 每批新日志都有自己的一轮贴底重试
 
-        _logScrollViewer ??= FindScrollViewer(LogList);
+        _logScrollViewer ??= ResolveLogScrollHost();
         if (_logScrollViewer is not { } scroll)
             return;
 
@@ -425,11 +562,18 @@ public sealed partial class MainPage : Page
         if (end <= 0)
             return;
 
+        // 用户正在框选：绝不挪视图（挪一下就把这次选区作废），等松手或取消选区后，下一批日志再跟
+        if (LogSelectionInProgress)
+            return;
+
         // 用户正在翻历史时不要抢滚动条；滚回底部附近就自动恢复跟随。
         if (_logFollowPaused && end - scroll.VerticalOffset > LogFollowResumeThresholdPx)
             return;
 
         _logFollowPaused = false;
+
+        if (Environment.TickCount64 < _logFollowBlockedUntilTicks)
+            return; // 2026-10-09 ⑨：重建后布局回弹期（80ms）不追底，窗口关闭时的 Settle 补贴底
 
         // 关闭滚动动画：动画帧同样会被新一轮日志打断，观感上就是闪
         ScrollLogTo(scroll, end);
@@ -450,13 +594,22 @@ public sealed partial class MainPage : Page
 
         if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
             {
-                _logScrollViewer ??= FindScrollViewer(LogList);
+                _logScrollViewer ??= ResolveLogScrollHost();
                 if (_logScrollViewer is not { } scroll || _logFollowPaused)
                     return;
 
+                // 框选中不贴底：贴底会把用户刚拉出来的选区清掉
+                if (LogSelectionInProgress)
+                    return;
+
+                if (Environment.TickCount64 < _logFollowBlockedUntilTicks)
+                    return; // 2026-10-09 ⑨：重建后布局回弹期（80ms）不贴底，同 LayoutUpdated
+
                 double end = scroll.ScrollableHeight;
                 if (end - scroll.VerticalOffset > 1)
+                {
                     ScrollLogTo(scroll, end);
+                }
             }))
         {
             _logSettlePasses = 0;
@@ -464,15 +617,20 @@ public sealed partial class MainPage : Page
     }
 
     /// <summary>
-    /// 日志项内容变化（比如重复合并成 “原文 xN” 后变高）不会触发 CollectionChanged，
-    /// 这里做兜底：没被用户上翻时，视图离底部就补一次贴底。限流避免布局抖动放大成忙等。
+    /// 版面变化的兜底：窗口宽度变了要重新折行、文本重建也会改行数，这些都不走 CollectionChanged
+    /// ——没被用户上翻时，视图离底部就补一次贴底。限流避免布局抖动放大成忙等。
+    /// （重复合并成"原文 xN"已改由 LogEntry.PropertyChanged → 文本重建接管。）
     /// </summary>
-    private void LogList_LayoutUpdated(object? sender, object e)
+    private void LogBox_LayoutUpdated(object? sender, object e)
     {
         if (_logFollowPaused)
             return;
 
-        _logScrollViewer ??= FindScrollViewer(LogList);
+        // 框选中不贴底：日志每来一行就贴一次底的话，正在拖的选区会被反复作废
+        if (LogSelectionInProgress)
+            return;
+
+        _logScrollViewer ??= ResolveLogScrollHost();
         if (_logScrollViewer is not { } scroll)
             return;
 
@@ -481,6 +639,9 @@ public sealed partial class MainPage : Page
             return;
 
         long now = Environment.TickCount64;
+        if (now < _logFollowBlockedUntilTicks)
+            return; // 2026-10-09 ⑨：重建后布局回弹期（80ms）不追底，见 _logFollowBlockedUntilTicks
+
         if (now - _logLayoutFollowTicks < LogLayoutFollowIntervalMs)
             return;
 
@@ -491,17 +652,23 @@ public sealed partial class MainPage : Page
     /// <summary>滚到底部，并记下"这次滚动是我们发起的"（免得被当成用户上翻）。</summary>
     private void ScrollLogTo(ScrollViewer scroll, double offset)
     {
-        _logScrollTarget = offset;
         scroll.ChangeView(null, offset, null, disableAnimation: true);
     }
 
     /// <summary>
-    /// 视图变化：回到底部附近 → 恢复跟随；确实离开底部、且不是我们自己滚的 → 暂停跟随（便于翻历史）。
+    /// 视图变化：回到底部附近 → 恢复跟随；确实往回滚 → 暂停跟随（便于翻历史）。
+    ///
+    /// <para>2026-10-06 修复：判据从"偏移与代码滚动目标值的差"和"是否落在自己滚动的时间窗内"
+    /// 改成<b>偏移有没有变小</b>。前两个都会误判：ChangeView 的目标是在读 extent 之后才落地的，
+    /// 自己滚的那一帧实际落点能比目标小几十像素（于是自己滚被判成用户上翻，跟随永久停摆）；
+    /// 而时间窗又会把"刚贴完底、用户马上往回翻"那一次吞掉（跟着立刻被拽回底部，翻历史翻不动）。
+    /// 方向判据没这个歧义：跟随只会往下拽，用户翻历史一定是往上滚。</para>
     /// </summary>
     private void LogScrollViewer_ViewChanged(object? sender, ScrollViewerViewChangedEventArgs e)
     {
         if (sender is not ScrollViewer scroll)
             return;
+
 
         double end = scroll.ScrollableHeight;
         double offset = scroll.VerticalOffset;
@@ -510,64 +677,197 @@ public sealed partial class MainPage : Page
         if (end - offset <= LogFollowResumeThresholdPx)
         {
             _logFollowPaused = false;
+            _logLastOffset = offset;
             return;
         }
 
-        // 视图正停在我们刚设的目标上（布局慢半拍、或滚动还没走到头）：不是用户操作
-        if (!double.IsNaN(_logScrollTarget) && Math.Abs(offset - _logScrollTarget) <= LogFollowResumeThresholdPx)
-            return;
+        // 只有"往回滚"才算用户翻历史（自动跟随只会把视图往下拽）
+        if (offset < _logLastOffset - LogFollowResumeThresholdPx)
+            _logFollowPaused = true;
 
-        _logFollowPaused = true;
+        _logLastOffset = offset;
     }
 
-    /// <summary>从 ListView 的模板里找到承载日志的 ScrollViewer。</summary>
-    private static ScrollViewer? FindScrollViewer(DependencyObject root)
-    {
-        if (root is ScrollViewer scrollViewer)
-            return scrollViewer;
-
-        int count = VisualTreeHelper.GetChildrenCount(root);
-        for (int i = 0; i < count; i++)
-        {
-            ScrollViewer? found = FindScrollViewer(VisualTreeHelper.GetChild(root, i));
-            if (found is not null)
-                return found;
-        }
-
-        return null;
-    }
+    /// <summary>
+    /// 取日志区的滚动宿主：<b>只认 XAML 里显式写出来的 <c>LogScrollHost</c></b>。
+    ///
+    /// <para>2026-10-06 修复：原来这里会退到 <c>FindScrollViewer(LogList)</c>，而它是沿可视树
+    /// 往下找第一个 ScrollViewer —— 从 ItemsRepeater 出发第一个命中的是<b>行内 TextBox 模板
+    /// 自带的 ContentElement ScrollViewer</b>（viewport 只有十几像素、ScrollableHeight 恒为 0）。
+    /// 一旦绑到它，"跟随最新一行"的三条路径就全在 <c>end &lt;= 0</c> 处早退，日志区永远停在开头；
+    /// 而且谁先执行（Page 的 Loaded 还是 ItemsRepeater 的 Loaded）决定绑到哪个，行为时灵时不灵。</para>
+    ///
+    /// <para>宁可返回 null 也不乱认：没有显式宿主时下面三条跟随路径直接不动，
+    /// 最多是"不自动跟随"，不会去操纵一个不相干的内部 ScrollViewer。</para>
+    /// </summary>
+    private ScrollViewer? ResolveLogScrollHost() => LogScrollHost;
 
     /// <summary>日志区的 ScrollViewer 只有模板套用后才有，这里挂上 ViewChanged 以识别“用户上翻”。</summary>
-    private void LogList_Loaded(object sender, RoutedEventArgs e)
+    private void LogBox_Loaded(object sender, RoutedEventArgs e)
     {
-        // 2026-10-05：日志区改成"显式 ScrollViewer + ItemsRepeater"，滚动宿主就是 XAML 里那个
-        // LogScrollHost，不用再往控件模板里找了。
-        _logScrollViewer ??= LogScrollHost ?? FindScrollViewer(LogList);
+        // 2026-10-08：日志区改成单个大 TextBox，文本不再由 x:Bind ItemsSource 驱动，
+        // 首次加载必须在这里挂上集合并整份画一次（换账号走 OnViewModelPropertyChanged 同一条路）。
+        HookLogs();
+
+        // 滚动宿主就是 XAML 里那个 LogScrollHost，不用再往控件模板里找了。
+        _logScrollViewer ??= ResolveLogScrollHost();
         if (_logScrollViewer is { } scroll)
         {
             scroll.ViewChanged -= LogScrollViewer_ViewChanged;
             scroll.ViewChanged += LogScrollViewer_ViewChanged;
         }
 
-        // 重复合并（xN）这类"只改内容不增删条目"的刷新不走 CollectionChanged，靠布局兜底
-        LogList.LayoutUpdated -= LogList_LayoutUpdated;
-        LogList.LayoutUpdated += LogList_LayoutUpdated;
+        // 版面兜底：重新折行、文本重建改了行数，这些不走 CollectionChanged
+        LogBox.LayoutUpdated -= LogBox_LayoutUpdated;
+        LogBox.LayoutUpdated += LogBox_LayoutUpdated;
+
+        // 2026-10-06 用户反馈"控制台还是不能自由框选文字"：框选手势期间必须知道用户正在操作，
+        // 否则日志一刷就自动跟到底、把选区清掉。
+        // PointerPressed 必须 handledEventsToo：日志文字（模板内层）会把按下标成已处理，
+        // 普通挂法一次回调都收不到——2026-10-09 探针实测坐实（三次点击零 press 回调），
+        // 也就是说 10-06 那版"按住期间不刷新"的保护其实一直没生效，用户 10-08 再次投诉与此吻合。
+        // 挂 LogBox 本体即限定在日志区内，无需再判坐标。
+        // PointerReleased/CaptureLost 挂在页面上并收 handled，因为"松手发生在日志区之外"
+        // （右键菜单、拖出边界）时也必须把标志清掉，否则标志卡在 true、日志会一直不跟随。
+        // 先 Remove 再 Add，避免 Loaded 多次触发时叠加同一个处理器。
+        LogBox.RemoveHandler(PointerPressedEvent, new PointerEventHandler(LogBox_PointerPressed));
+        LogBox.AddHandler(PointerPressedEvent, new PointerEventHandler(LogBox_PointerPressed), handledEventsToo: true);
+        RemoveHandler(PointerReleasedEvent, new PointerEventHandler(LogBox_PointerReleased));
+        AddHandler(PointerReleasedEvent, new PointerEventHandler(LogBox_PointerReleased), handledEventsToo: true);
+        RemoveHandler(PointerCaptureLostEvent, new PointerEventHandler(LogBox_PointerCaptureLost));
+        AddHandler(PointerCaptureLostEvent, new PointerEventHandler(LogBox_PointerCaptureLost), handledEventsToo: true);
+
+        // 2026-10-09 ⑨：重建文本期间吞掉 LogBox 的 BringIntoViewRequested，
+        // 防止 Text=/Select 的原生 caret 追逐把外层视口从底部拽走（详见处理函数注释）。
+        LogBox.RemoveHandler(BringIntoViewRequestedEvent, new Windows.Foundation.TypedEventHandler<UIElement, BringIntoViewRequestedEventArgs>(LogBox_BringIntoViewRequested));
+        LogBox.AddHandler(BringIntoViewRequestedEvent, new Windows.Foundation.TypedEventHandler<UIElement, BringIntoViewRequestedEventArgs>(LogBox_BringIntoViewRequested), handledEventsToo: true);
 
         ForceScrollLogToEnd();
     }
 
+    // ---- 框选期间不许自动跟随（2026-10-06 用户反馈"控制台不能自由框选"）----
+
+    /// <summary>日志区那个大 TextBox（SelectionLength &gt; 0 表示用户确实选中了字）。</summary>
+    private TextBox? _logSelectionBox;
+
+    /// <summary>
+    /// 用户此刻正在日志区做选择操作。
+    ///
+    /// <para>为什么必须有这个状态：自动跟随靠 <see cref="ScrollViewer.ChangeView"/> 挪视图，
+    /// 而 XAML 里"拖动选中文本"和"平移滚动"走的是同一条 Direct Manipulation 管线——
+    /// 视图只要在拖动过程中被程序挪一下，这次框选就作废。日志在刷时三条跟随路径每几十毫秒挪一次，
+    /// 于是选区刚拉出来就被清掉，表现就是"怎么拖都选不中"。</para>
+    ///
+    /// <para>注意不能拿 <c>_logFollowPaused</c> 顶替：那个只在"用户自己滚动离开底部"时才置位，
+    /// 而框选完全不产生滚动事件，它会一直是 false。</para>
+    /// </summary>
+    private bool LogSelectionInProgress =>
+        LogPointerPressed
+        || _logSelectionBox is { SelectionLength: > 0 };
+
+    /// <summary>指针按下的时刻（0 表示当前没有按下）。</summary>
+    private long _logPointerDownTicks;
+
+    /// <summary>
+    /// 按下标志的兜底有效期：超过这么久就当它已经失效。
+    /// PointerReleased / PointerCaptureLost 正常都会清掉它，但一旦漏了（窗口切换、弹出层吃掉松手等），
+    /// 卡住的标志会让日志永远不再自动跟随——那比一次框选失败糟糕得多。
+    /// </summary>
+    private const long LogPointerDownStaleMs = 60_000;
+
+    /// <summary>
+    /// 指针正按在日志区（框选手势进行中）：这段时间<b>既不挪视图也不重绘文本</b>——
+    /// 两者任何一个动一下都会把正在拖的选区作废。松手后由 <see cref="FlushLogText"/> 补画。
+    /// </summary>
+    private bool LogPointerPressed =>
+        _logPointerDownTicks is long ticks && Environment.TickCount64 - ticks < LogPointerDownStaleMs;
+
+    private void LogBox_PointerPressed(object sender, PointerRoutedEventArgs e)
+    {
+        _logPointerDownTicks = Environment.TickCount64;
+    }
+
+    /// <summary>
+    /// 松手：清框选标志 + 补画文本；顺带处理 2026-10-09 需求④的 <b>Ctrl+左键点链接</b>。
+    ///
+    /// 链接点击原本挂在 Tapped 上，实测探针（RightTapped/菜单正常、Tapped 零回调）
+    /// 证明 WinUI 的 TextBox 不抛 Tapped，改在这里做：按下已被文本框消化、光标已落在点击处，
+    /// 松手时找链接。本处理器挂在页面上（handledEventsToo），
+    /// 所以要自己圈定"这次按下起于日志区、松手仍在日志区内、没有拖出选区"才算一次点击。
+    ///
+    /// 2026-10-09 问题⑪：链接定位从"光标行"改成"<b>指针行 + 行内列</b>"
+    /// （<see cref="GetCharIndexAtPointer"/>）——光标会被 Text= 重建/焦点时序带偏，
+    /// 行内多链接时还恒取第一个（点哪个都开连接行的 play.simpfun.cn）。
+    /// </summary>
+    private void LogBox_PointerReleased(object sender, PointerRoutedEventArgs e)
+    {
+        bool pressStartedOnLogBox = _logPointerDownTicks != 0;
+        _logPointerDownTicks = 0;
+
+        // 框选期间攒下的文本更新在这里补画
+        if (_logTextDirty)
+            FlushLogText();
+
+        if (!pressStartedOnLogBox || !IsCtrlDown())
+            return;
+
+        Windows.Foundation.Point p = e.GetCurrentPoint(LogBox).Position;
+        if (p.X < 0 || p.Y < 0 || p.X > LogBox.ActualWidth || p.Y > LogBox.ActualHeight)
+            return; // 松手在日志区外（拖出边界）：不算点击
+
+        if (LogBox.SelectionLength > 0)
+            return; // 拖出了选区：那是框选，不是点击
+
+        int idx = GetCharIndexAtPointer(p);
+        if (idx >= 0)
+        {
+            TryOpenLinkInText(GetLineAt(LogBox.Text, idx, out int lineStart), idx - lineStart);
+        }
+        else
+        {
+            TryOpenLinkInText(GetLineAtCaret()); // 指针反查不到：退回旧行为（光标行的第一个链接）
+        }
+    }
+
+    private void LogBox_PointerCaptureLost(object sender, PointerRoutedEventArgs e)
+    {
+        // 实测顺序是"捕获拆除先于松手事件"（2026-10-09 探针：captureLost 比 rel 早 1~10ms），
+        // 无条件清标志会让紧随其后的松手读到 0——框选保护、Ctrl+点击的"按下起于日志区"都白判。
+        // 按钮还按着 = 真·中途丢捕获（该清，防止标志卡住）；按钮已松开 = 正常松手的捕获拆除，
+        // 交由随后的 PointerReleased 去清（它挂在页面上收 handled，必达）。
+        var props = e.GetCurrentPoint(LogBox).Properties;
+        bool anyButtonDown = props.IsLeftButtonPressed || props.IsRightButtonPressed || props.IsMiddleButtonPressed;
+        if (anyButtonDown)
+            _logPointerDownTicks = 0;
+
+        if (_logTextDirty)
+            FlushLogText();
+    }
+
+    /// <summary>日志 TextBox 的选区变化（2026-10-08 起日志区只有一个大 TextBox）：供"有选区就别自动跟随"判断。</summary>
+    private void LogLine_SelectionChanged(object sender, RoutedEventArgs e)
+    {
+        if (sender is not TextBox box)
+            return;
+
+        _logSelectionBox = box;
+    }
+
     // ---- 日志复制与链接跳转（2026-10-04 用户需求：控制台无法复制、链接点不开）----
 
-    /// <summary>日志行里的 http/https 链接（截到空白与中英文标点前）。</summary>
+    /// <summary>
+    /// 日志行里的链接（截到空白与中英文标点前）。
+    /// 2026-10-09 ②(a) 扩围：除 http(s):// 外也认 www. 前缀与常见 TLD 结尾的裸域名
+    /// （用户测试的 www.baidu.com 不带协议头，旧正则一条都匹配不上）。TLD 用白名单，
+    /// 避开 server.jar / test.out.log 这类文件名假阳性（另加"TLD 后紧跟 .扩展名 或 \ 路径"的
+    /// 否定前瞻，专杀 MCCX.App.dll、MCCX.App\Main 这类程序集/路径误匹配）；打开时无协议头统一补 https://。
+    /// </summary>
     private static readonly Regex UrlRegex = new(
-        @"https?://[^\s""'<>\[\]()（），。；、]+",
-        RegexOptions.Compiled);
+        @"(?:https?://|www\.)[^\s""'<>\[\]()（），。；、]+|(?<![\w.-])(?:[a-z0-9-]+\.)+(?:com|cn|net|org|io|co|me|cc|xyz|top|vip|club|app|dev|site|online|shop|fun|live|tv|info|biz|store|tech|space|pro|life|work|day|wiki|news|game|win|today|gov|edu|mil)\b(?!\.[a-z0-9])(?!\\)",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
-    /// <summary>最近一次右键命中的日志行（右键菜单的"复制 / 打开链接"用它）。</summary>
-    private LogEntry? _logContextEntry;
-
-    /// <summary>最近一次右键命中的那一行里"可选中文本"的 TextBox（用来取 SelectedText）。</summary>
-    private TextBox? _logContextTextBox;
+    /// <summary>最近一次右键命中的那一行文本（右键菜单的"复制 / 打开链接"用它）。</summary>
+    private string? _logContextText;
 
     /// <summary>Ctrl 是否按住：WinUI 没有现成的修饰键参数，问当前线程的键盘状态。</summary>
     private static bool IsCtrlDown() =>
@@ -575,152 +875,445 @@ public sealed partial class MainPage : Page
             .HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
 
     /// <summary>
-    /// 打开某条日志里的链接（Ctrl+点击行，或右键菜单里点"打开链接"）。
-    /// 行文本用 BaseText：不带重复合并的 "xN" 后缀，也没有 § 颜色码。
+    /// 打开某段日志文本里的链接（Ctrl+点击行，或右键菜单里点"打开链接"）。
+    /// 合并成一个大 TextBox 后按"行"取文本（<see cref="GetLineAt"/>）；
+    /// 重复合并的计数后缀是" xN"（前面有空格），不会被链接正则吞进去。
+    ///
+    /// 2026-10-09 问题⑪：<paramref name="preferCol"/> ≥ 0 时取<b>离该列最近</b>的匹配——
+    /// 旧行为恒取行内第一个，一行有多个链接时点哪个都开第一个（连接行排最前的
+    /// 正是服务器地址，用户实测"点哪个链接都跳 play.simpfun.cn"）。
+    /// 列落在某链接内部时距离为 0 直接命中，与字底画的下划线一一对应。
     /// </summary>
-    private static bool TryOpenLinkInEntry(LogEntry? entry)
+    private static bool TryOpenLinkInText(string? lineText, int preferCol = -1)
     {
-        if (entry is null)
+        if (string.IsNullOrEmpty(lineText))
             return false;
 
-        Match m = UrlRegex.Match(entry.BaseText);
-        if (!m.Success)
+        MatchCollection matches = UrlRegex.Matches(lineText);
+        if (matches.Count == 0)
             return false;
 
-        string url = m.Value.TrimEnd('.', ':', ';', ',', '!', '?', '，', '。');
+        Match chosen = matches[0];
+        if (preferCol >= 0)
+        {
+            int bestGap = int.MaxValue;
+            foreach (Match cand in matches)
+            {
+                int gap = preferCol < cand.Index ? cand.Index - preferCol
+                        : preferCol >= cand.Index + cand.Length ? preferCol - (cand.Index + cand.Length - 1)
+                        : 0;
+                if (gap < bestGap)
+                {
+                    bestGap = gap;
+                    chosen = cand;
+                    if (gap == 0)
+                        break; // 点击就落在链接内部
+                }
+            }
+        }
+
+        string url = chosen.Value.TrimEnd('.', ':', ';', ',', '!', '?', '，', '。');
         if (url.Length == 0)
             return false;
 
-        _ = Launcher.LaunchUriAsync(new Uri(url));
+        // 2026-10-09 ②(a)：裸域名（www.baidu.com / baidu.com）没协议头，new Uri 会抛
+        // ——无协议头统一补 https:// 再开。
+        if (!url.Contains("://", StringComparison.Ordinal))
+            url = "https://" + url;
+
+        try
+        {
+            _ = Launcher.LaunchUriAsync(new Uri(url));
+        }
+        catch (UriFormatException)
+        {
+            return false;
+        }
+
         return true;
     }
 
-    /// <summary>Ctrl+点击日志行：行内有链接就交给系统浏览器打开（普通点击是选中文字）。</summary>
-    private void LogList_Tapped(object sender, TappedRoutedEventArgs e)
+    /// <summary>
+    /// 右键日志区：记下<b>指针下面那一行</b>的文本，供 <see cref="LogContextCopy_Click"/>
+    /// （没选中时退回这一行）用。右键不一定挪光标，所以按指针位置反查
+    /// （<see cref="GetLineTextAtPointer"/>），查不到才退回光标行。
+    /// </summary>
+    private void LogBox_RightTapped(object sender, RightTappedRoutedEventArgs e)
     {
-        if (!IsCtrlDown())
-            return;
+        _logContextText = GetLineTextAtPointer(e.GetPosition(LogBox)) ?? GetLineAtCaret();
 
-        if (e.OriginalSource is not DependencyObject hit)
-            return;
+        // 不设 e.Handled：ContextFlyout 的弹出与它挂钩，交回系统，菜单照常弹
+    }
 
-        if (FindLogEntry(hit) is { } entry && TryOpenLinkInEntry(entry))
-            e.Handled = true;
+    /// <summary>光标（或选区起点）所在那一行的文本；空日志返回 null。</summary>
+    private string? GetLineAtCaret()
+    {
+        string text = LogBox.Text;
+        if (text.Length == 0)
+            return null;
+
+        return GetLineAt(text, Math.Clamp(LogBox.SelectionStart, 0, text.Length - 1));
     }
 
     /// <summary>
-    /// 右键日志区：记下被右键的那一行（以及行内那个可选中文本的 TextBox），
-    /// 供 <see cref="LogContextCopy_Click"/> / <see cref="LogContextOpenLink_Click"/> 用。
+    /// 指针下面的字符下标（2026-10-09 问题⑪：Ctrl+点击按<b>指针</b>定位行与列，不依赖光标）。
+    /// WinUI 的 TextBox 没有 <c>GetCharacterIndexFromPoint</c>，改用
+    /// <see cref="TextBox.GetRectFromCharacterIndex(int, bool)"/> 两段二分/扫描：
+    /// <list type="number">
+    /// <item>阶段一：字符矩形 Top 随下标单调不减（⑩b 实测），Y 二分出点击的<b>视觉行</b>末下标；</item>
+    /// <item>阶段二：TextWrapping=Wrap 下一个逻辑行可跨多个视觉行，先把范围收窄到该视觉行，
+    /// 行内按 rect.Left 线性扫出点击列（等宽字体步长一致，行长有界，一次点击扫几十次无所谓）。</item>
+    /// </list>
+    /// 找不到（空文本 / 矩形全 NaN）返回 -1。坐标与 <c>e.GetPosition(LogBox)</c> 同一 DIP 坐标系。
     /// </summary>
-    private void LogList_RightTapped(object sender, RightTappedRoutedEventArgs e)
+    private int GetCharIndexAtPointer(Windows.Foundation.Point p)
     {
-        _logContextEntry = null;
-        _logContextTextBox = null;
+        string text = LogBox.Text;
+        if (text.Length == 0)
+            return -1;
 
-        if (e.OriginalSource is not DependencyObject hit)
-            return;
-
-        if (FindLogEntry(hit) is not { } entry)
-            return;
-
-        _logContextEntry = entry;
-        _logContextTextBox = FindDescendant<TextBox>(hit);
-        e.Handled = true;
-    }
-
-    /// <summary>
-    /// 从被点中的元素往上找它所属的那条日志。
-    /// 2026-10-05：日志区从 ListView 换成 ItemsRepeater，已经没有 <c>ListViewItem</c> 这个祖先了，
-    /// 所以改成"往上找第一个 DataContext 是 <see cref="LogEntry"/> 的元素"——模板根 Grid 的
-    /// DataContext 就是这一行的 LogEntry，与容器无关，换回 ListView 也照样能用。
-    /// </summary>
-    private static LogEntry? FindLogEntry(DependencyObject? node)
-    {
-        while (node is not null)
+        // ---- 阶段一：Y 二分 → best = 最后一个 Top ≤ p.Y 的下标（点击落在这条视觉行） ----
+        int lo = 0;
+        int hi = text.Length - 1;
+        int best = -1;
+        while (lo <= hi)
         {
-            if (node is FrameworkElement fe && fe.DataContext is LogEntry entry)
-                return entry;
+            int mid = lo + ((hi - lo) >> 1);
+            Windows.Foundation.Rect rect = LogBox.GetRectFromCharacterIndex(mid, trailingEdge: false);
 
-            node = VisualTreeHelper.GetParent(node);
+            // 末尾等位置可能拿不到矩形（NaN / 空矩形）：当作"还没到"，往左半边找
+            if (double.IsNaN(rect.Top) || double.IsNaN(rect.Height))
+            {
+                hi = mid - 1;
+                continue;
+            }
+
+            if (rect.Top <= p.Y)
+            {
+                best = mid;
+                lo = mid + 1;
+            }
+            else
+            {
+                hi = mid - 1;
+            }
         }
 
-        return null;
+        if (best < 0)
+            return -1;
+
+        while (best > 0 && IsLineBreak(text[best]))
+            best--; // 下标落在行分隔符上归上一行（'\r\n' 两个字符整体算上一行的尾）
+
+        // ---- 收窄到 best 所在的视觉行：同一 Top 的连续下标段 ----
+        double rowTop = LogBox.GetRectFromCharacterIndex(best, trailingEdge: false).Top;
+
+        int rowStart = best;
+        while (rowStart > 0 && !IsLineBreak(text[rowStart - 1]))
+        {
+            Windows.Foundation.Rect r = LogBox.GetRectFromCharacterIndex(rowStart - 1, trailingEdge: false);
+            if (double.IsNaN(r.Top) || Math.Abs(r.Top - rowTop) > 0.5)
+                break;
+            rowStart--;
+        }
+
+        int rowEnd = best + 1; // 开区间
+        while (rowEnd < text.Length && !IsLineBreak(text[rowEnd]))
+        {
+            Windows.Foundation.Rect r = LogBox.GetRectFromCharacterIndex(rowEnd, trailingEdge: false);
+            if (double.IsNaN(r.Top) || Math.Abs(r.Top - rowTop) > 0.5)
+                break;
+            rowEnd++;
+        }
+
+        // ---- 阶段二：行内按 X 扫出点击列（r.Left 随下标单调不减；线性扫不依赖单调性） ----
+        int colIdx = rowStart;
+        for (int i = rowStart; i < rowEnd; i++)
+        {
+            Windows.Foundation.Rect r = LogBox.GetRectFromCharacterIndex(i, trailingEdge: false);
+            if (double.IsNaN(r.Left))
+                break;
+            if (r.Left > p.X)
+                break; // 已越过点击列
+            colIdx = i;
+            if (p.X < r.Right)
+                break; // 点击落在该字符内部（字符边矩形宽恒为 0 时此条件不触发，靠下一轮 Left 判断）
+        }
+
+        return colIdx;
+    }
+
+    /// <summary>指针下面那一行的文本；查不到返回 null（调用方退回光标行）。</summary>
+    private string? GetLineTextAtPointer(Windows.Foundation.Point p)
+    {
+        int idx = GetCharIndexAtPointer(p);
+        return idx < 0 ? null : GetLineAt(LogBox.Text, idx);
+    }
+
+    /// <summary>
+    /// 行分隔符判定（2026-10-09 问题⑪的根因件）：<b>WinUI 的 TextBox 存储的换行不是 <c>'\n'</c></b>
+    /// ——chk_url 探针实测日志区 ValuePattern 文本里控制字符只有 CR=13、没有 LF=10，
+    /// 而 LogBox 实打实渲染出二十多行。旧实现按 <c>'\n'</c> 找行，一个换行都切不出来，
+    /// <see cref="GetLineAtCaret"/> 恒返回<b>整篇日志</b> → Ctrl+点击恒开"全日志第一个链接"
+    /// （连接行的 play.simpfun.cn）——正是用户报的"点哪个链接都跳 play.simpfun.cn"。
+    /// 读取侧必须同时认 <c>'\r'</c> 与 <c>'\n'</c>（<c>'\r\n'</c> 整体算一个换行）。
+    /// </summary>
+    private static bool IsLineBreak(char c) => c == '\n' || c == '\r';
+
+    /// <summary>取 text 中第 index 个字符所在的那一行（不含换行符；落在换行符上归上一行）。</summary>
+    private static string GetLineAt(string text, int index) => GetLineAt(text, index, out _);
+
+    /// <summary>同上，另返回行首下标（Ctrl+点击按"行内列"挑最近链接要用）。</summary>
+    private static string GetLineAt(string text, int index, out int lineStart)
+    {
+        lineStart = 0;
+        if (text.Length == 0)
+            return string.Empty;
+
+        int i = Math.Clamp(index, 0, text.Length - 1);
+        while (i > 0 && IsLineBreak(text[i]))
+            i--; // 落在行分隔符上归上一行；'\r\n' 两个字符整体都算上一行的尾
+
+        int start = i;
+        while (start > 0 && !IsLineBreak(text[start - 1]))
+            start--;
+
+        int end = i;
+        while (end < text.Length && !IsLineBreak(text[end]))
+            end++;
+
+        lineStart = start;
+        return end >= start ? text[start..end] : string.Empty;
     }
 
     /// <summary>
     /// 右键菜单「复制」（2026-10-05 用户要求：去掉底部"复制日志"按钮，改成选中文字后右键复制）：
-    /// 有选中就只复制选中的那几个字，没选中才退回整行。
+    /// 有选中就只复制选中的那几个字——合并成一个 TextBox 后选区可以横跨多行，
+    /// 正是用户要的"像记事本一样复制好几行"；没选中才退回右键命中的那一行。
     /// </summary>
     private void LogContextCopy_Click(object sender, RoutedEventArgs e)
     {
-        string? selected = _logContextTextBox?.SelectedText;
-        if (!string.IsNullOrEmpty(selected))
+        if (LogBox.SelectionLength > 0)
         {
-            CopyLinesToClipboard([selected]);
+            CopyLinesToClipboard([LogBox.SelectedText]);
             return;
         }
 
-        if (_logContextEntry is { } entry)
-            CopyLinesToClipboard([entry.BaseText]);
+        if (!string.IsNullOrEmpty(_logContextText))
+            CopyLinesToClipboard([_logContextText]);
     }
 
-    /// <summary>右键菜单「打开链接」：这一行有 http(s) 链接才打开。</summary>
-    private void LogContextOpenLink_Click(object sender, RoutedEventArgs e) =>
-        TryOpenLinkInEntry(_logContextEntry);
+    // ---- 2026-10-09 ⑨：日志重建期间屏蔽 BringIntoView（点击选中时视口上下跳动的修复）----
 
     /// <summary>
-    /// 鼠标移到日志行上：这一行里有链接就把整行加下划线，提示"这行能点开链接"。移开就还原。
+    /// 是否处于"重建日志文本"的原生追逐抑制窗口（True 时吞掉 LogBox 的 BringIntoViewRequested）。
     ///
-    /// 为什么是"下边框"而不是 <c>TextDecorations.Underline</c>：行内容是只读 TextBox
-    /// （为了能在行内自由框选并读出 SelectedText），而 WinUI 3 的 TextBox 没有 TextDecorations。
-    /// 画一条贴着文字下沿的边框，视觉上就是下划线。
+    /// <para>根因（2026-10-09 插桩实测）：按住期间攒下新行 → 松手 RebuildLogText 设 Text= 会把
+    /// caret 重置到 0、随后 Select 又把它放回原位，两次都异步请求外层滚动——实测松手后
+    /// +15ms 视口冲到 offset=0（顶）、+120ms 又落在 caret 处（半空），offset 变小还把
+    /// _logFollowPaused 置真、卡死不再跟随。静态环境（无新行、无 Text=）点击完全不跳，
+    /// 与用户"连着服点就跳、探针里点不跳"的差异完全吻合。</para>
+    ///
+    /// <para>窗口必须跨帧：追逐是异步的（最晚 +120ms、数个布局帧之后），只包同步段拦不住——
+    /// 用一次性定时器 400ms 后关闭。窗口内用户自己的滚动/点击不受影响（滚动不走 BringIntoView；
+    /// 窗口内点击的 caret 本来就在视野内，请求为无操作）。</para>
     /// </summary>
-    private void LogItem_PointerEntered(object sender, PointerRoutedEventArgs e)
+    private bool _suppressBringIntoView;
+
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _bringIntoViewSuppressTimer;
+
+    /// <summary>打开 400ms 抑制窗口（覆盖实测 +15~120ms 的原生追逐，留足余量）。</summary>
+    private void BeginSuppressBringIntoView()
     {
-        if (sender is not DependencyObject node)
-            return;
-
-        if (FindLogEntry(node) is not { } entry)
-            return;
-
-        if (!UrlRegex.IsMatch(entry.BaseText))
-            return;
-
-        if (FindDescendant<TextBox>(node) is { } box)
-            SetLogUnderline(box, true);
-    }
-
-    /// <summary>鼠标移出日志行：去掉下划线。</summary>
-    private void LogItem_PointerExited(object sender, PointerRoutedEventArgs e)
-    {
-        if (sender is not DependencyObject node)
-            return;
-
-        if (FindDescendant<TextBox>(node) is { } box)
-            SetLogUnderline(box, false);
-    }
-
-    /// <summary>下划线 = 只留 1 物理像素的下边框；线色取文字色压暗一档，明暗两套主题都能看清。</summary>
-    private static void SetLogUnderline(TextBox box, bool on)
-    {
-        if (on)
+        if (_bringIntoViewSuppressTimer is null)
         {
-            if (box.BorderThickness.Bottom > 0)
-                return;
-
-            box.BorderBrush = box.Foreground is SolidColorBrush solid
-                ? new SolidColorBrush(Windows.UI.Color.FromArgb(0x99, solid.Color.R, solid.Color.G, solid.Color.B))
-                : new SolidColorBrush(Windows.UI.Color.FromArgb(0x99, 0x80, 0x80, 0x80));
-            box.BorderThickness = new Thickness(0, 0, 0, 1);
-            return;
+            _bringIntoViewSuppressTimer = DispatcherQueue.CreateTimer();
+            _bringIntoViewSuppressTimer.Tick += (s, _) =>
+            {
+                s.Stop();
+                _suppressBringIntoView = false;
+                // 窗口结束时 extent 早已稳定：没被用户上翻就再补一次贴底，
+                // 兜住"瞬时钳位停在半空"（Settle 回调自带暂停/框选判断）。
+                if (!_logFollowPaused)
+                    ScheduleScrollSettle();
+            };
         }
 
-        if (box.BorderThickness.Bottom <= 0)
+        _suppressBringIntoView = true;
+        _logFollowBlockedUntilTicks = Environment.TickCount64 + LogRebuildFollowQuietMs;
+        _bringIntoViewSuppressTimer.Stop();
+        _bringIntoViewSuppressTimer.Interval = TimeSpan.FromMilliseconds(400);
+        _bringIntoViewSuppressTimer.Start();
+    }
+
+    private void LogBox_BringIntoViewRequested(object sender, BringIntoViewRequestedEventArgs e)
+    {
+        if (!_suppressBringIntoView)
             return;
 
-        box.BorderThickness = new Thickness(0);
-        box.BorderBrush = null;
+        e.Handled = true; // 重建窗口内：不许原生把视口从底部拽走
     }
+
+    // ---- 链接下划线提示（2026-10-09 需求④：Ctrl+左键跳转 + 链接下方加下划线，去掉右键"打开链接"）----
+    //
+    // 纯文本 TextBox 没法只给某几个字加下划线（那要富文本、会丢 ValuePattern，测试读日志的
+    // Get-RecentLogText / Wait-LogContains 一套都得重做）。所以在 LogBox 之上叠一层
+    // IsHitTestVisible=False 的 Canvas（XAML 里的 LinkUnderlineLayer），用
+    // GetRectFromCharacterIndex 算出每个链接字符的矩形、在字底画一条 1px 线。
+    // Canvas 与 LogBox 同处一个 Grid、同样撑到内容全高，随外层 LogScrollHost 一起滚动。
+
+    /// <summary>下划线是否要重画（文本/尺寸变了置位，按帧合并成一次 <see cref="RedrawLinkUnderlines"/>）。</summary>
+    private bool _linkUnderlineDirty;
+
+    /// <summary>是否已经排了一次下划线重画（避免重复入队）。</summary>
+    private bool _linkUnderlineQueued;
+
+    /// <summary>标记下划线要重画，按帧合并。</summary>
+    private void MarkLinkUnderlinesDirty()
+    {
+        _linkUnderlineDirty = true;
+        if (_linkUnderlineQueued)
+            return;
+
+        _linkUnderlineQueued = true;
+        if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+            {
+                _linkUnderlineQueued = false;
+                if (_linkUnderlineDirty)
+                    RedrawLinkUnderlines();
+            }))
+        {
+            _linkUnderlineQueued = false;
+        }
+    }
+
+    /// <summary>日志区尺寸变了（换行宽度变 → 链接矩形跟着变）：重画下划线。</summary>
+    private void LogBox_SizeChanged(object sender, SizeChangedEventArgs e) => MarkLinkUnderlinesDirty();
+
+    /// <summary>
+    /// 按 <see cref="LogBox"/> 当前文本里的每个 http(s) 链接，在 <see cref="LinkUnderlineLayer"/>
+    /// 上画 1px 下划线。链接可能因 TextWrapping 被折行，所以按<b>字符</b>取矩形、
+    /// 同一行内把相邻字符的线段并成一条（Top 相同即同行），跨行则各画各的。
+    /// </summary>
+    private void RedrawLinkUnderlines()
+    {
+        _linkUnderlineDirty = false;
+        LinkUnderlineLayer.Children.Clear();
+
+        string text = LogBox.Text;
+        if (text.Length == 0)
+            return;
+
+        foreach (Match m in UrlRegex.Matches(text))
+        {
+            string url = m.Value.TrimEnd('.', ':', ';', ',', '!', '?', '，', '。');
+            if (url.Length == 0)
+                continue;
+
+            int start = m.Index;
+            int len = url.Length;
+            double lastTop = double.NaN;
+            double segStartX = 0;
+            double segEndX = 0;
+
+            for (int i = 0; i < len; i++)
+            {
+                int ci = start + i;
+                if (ci >= text.Length)
+                    break;
+
+                Windows.Foundation.Rect r = LogBox.GetRectFromCharacterIndex(ci, trailingEdge: false);
+                if (double.IsNaN(r.Top) || double.IsNaN(r.Left))
+                    continue;
+
+                // 字符矩形宽恒为 0（"字符边"矩形，见 LogBox_RightTapped 的实测注释），
+                // 右边缘要取下一个字符的左边缘——按 Width 画线会一条都画不出来（2026-10-09 探针实测）。
+                double charRight = GetCharRightEdge(text, ci, r);
+
+                if (double.IsNaN(lastTop) || Math.Abs(r.Top - lastTop) > 0.5)
+                {
+                    // 换了行：把上一段收尾（Bottom 取上一个字符矩形下沿）
+                    if (!double.IsNaN(lastTop))
+                    {
+                        Windows.Foundation.Rect prevR = LogBox.GetRectFromCharacterIndex(start + i - 1, trailingEdge: false);
+                        // 2026-10-09 ②(b) 实测：字符矩形高 = 2×行高（行高14 → 矩形高28，最后一行也一样），
+                        // 直接拿 Height 当行底会把下划线整掉到下一行（用户看到的"划到下一条日志中"）。
+                        double prevBottom = double.IsNaN(prevR.Height) ? lastTop + 14 : prevR.Top + prevR.Height / 2;
+                        AddUnderlineSegment(segStartX, segEndX, lastTop, prevBottom);
+                    }
+
+                    lastTop = r.Top;
+                    segStartX = r.Left;
+                    segEndX = charRight;
+                }
+                else
+                {
+                    segEndX = charRight;
+                }
+            }
+
+            if (!double.IsNaN(lastTop))
+            {
+                // 最后一段：行底 = 行顶 + 行高（矩形高=2×行高，除以2才是本行行底；见上一条注释）
+                Windows.Foundation.Rect lastR = LogBox.GetRectFromCharacterIndex(start + len - 1, trailingEdge: false);
+                double bottom = double.IsNaN(lastR.Height) ? lastTop + 14 : lastR.Top + lastR.Height / 2;
+                AddUnderlineSegment(segStartX, segEndX, lastTop, bottom);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 某个字符的右边缘 X（<see cref="RedrawLinkUnderlines"/> 用）。
+    /// WinUI 的 <c>GetRectFromCharacterIndex(trailingEdge: false)</c> 返回<b>字符左边</b>的零宽"字符边"矩形
+    /// （实测 Width 恒为 0，与 <see cref="GetLineTextAtPointer"/> 的注释一致），
+    /// 右边只能取下一个字符的左边；下标越界或下一个字符已换行（链接被折行）时，
+    /// 退回用同一行上一个字符的宽度（等宽字体步长）推算。
+    /// </summary>
+    private double GetCharRightEdge(string text, int ci, Windows.Foundation.Rect r)
+    {
+        if (ci + 1 < text.Length)
+        {
+            Windows.Foundation.Rect next = LogBox.GetRectFromCharacterIndex(ci + 1, trailingEdge: false);
+            if (!double.IsNaN(next.Left) && next.Left > r.Left && Math.Abs(next.Top - r.Top) < 0.5)
+                return next.Left;
+        }
+
+        if (ci > 0)
+        {
+            Windows.Foundation.Rect prev = LogBox.GetRectFromCharacterIndex(ci - 1, trailingEdge: false);
+            if (!double.IsNaN(prev.Left) && prev.Left < r.Left && Math.Abs(prev.Top - r.Top) < 0.5)
+                return r.Left + (r.Left - prev.Left);
+        }
+
+        return r.Left + 7; // 兜底：Consolas 12 号一个字宽约 6.5~7 DIP
+    }
+
+    /// <summary>在 LinkUnderlineLayer 上放一条 1px 高的线段（x 从 x1 到 x2，压在字底 yBottom 处）。</summary>
+    private void AddUnderlineSegment(double x1, double x2, double yTop, double yBottom)
+    {
+        if (x2 <= x1)
+            return;
+
+        var line = new Microsoft.UI.Xaml.Shapes.Rectangle
+        {
+            Width = x2 - x1,
+            Height = 1,
+            Fill = UnderlineBrush,
+        };
+
+        // 贴到字底：取该字符矩形下沿再往上 1px，线压在字脚下而不是盖住下一行
+        double y = yBottom - 1;
+        if (y < yTop)
+            y = yTop;
+
+        Canvas.SetLeft(line, x1);
+        Canvas.SetTop(line, y);
+        LinkUnderlineLayer.Children.Add(line);
+    }
+
+    /// <summary>下划线颜色：次级文字色，浅/暗色主题都跟着走（只作"可点"提示，不抢正文）。</summary>
+    private static Brush UnderlineBrush =>
+        (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"];
 
     private static void CopyLinesToClipboard(IReadOnlyList<string> lines)
     {
@@ -738,26 +1331,6 @@ public sealed partial class MainPage : Page
                 return match;
 
             node = VisualTreeHelper.GetParent(node);
-        }
-
-        return null;
-    }
-
-    /// <summary>沿可视树往下找指定类型后代（行内那个可选中文本的 TextBox）。</summary>
-    private static T? FindDescendant<T>(DependencyObject? node) where T : DependencyObject
-    {
-        if (node is null)
-            return null;
-
-        int count = VisualTreeHelper.GetChildrenCount(node);
-        for (int i = 0; i < count; i++)
-        {
-            DependencyObject child = VisualTreeHelper.GetChild(node, i);
-            if (child is T match)
-                return match;
-
-            if (FindDescendant<T>(child) is { } nested)
-                return nested;
         }
 
         return null;

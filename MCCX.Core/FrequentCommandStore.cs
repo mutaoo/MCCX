@@ -1,3 +1,5 @@
+﻿using System.Runtime.Versioning;
+
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -74,9 +76,9 @@ public sealed class FrequentCommand
 /// 常用命令的明文 JSON 存取（命令本身不算敏感数据；含口令的命令不会被自动记录，见
 /// <see cref="FrequentCommand.IsAutoRecordable"/>）。
 ///
-/// 目录规则与账号库一致：优先 exe 同目录（整文件夹拷走就能用），
-/// 不可写时退到 %LOCALAPPDATA%\MCCX。
+/// 存在用户数据目录（程序目录下的 UserData）里，与账号库同目录，升级时一起被带走。
 /// </summary>
+[SupportedOSPlatform("windows")]
 public sealed class FrequentCommandStore
 {
     /// <summary>最多保留条数：够翻又不至于让下拉列表变成一堵墙。</summary>
@@ -93,7 +95,12 @@ public sealed class FrequentCommandStore
 
     public FrequentCommandStore(string? directory = null)
     {
-        _path = Path.Combine(directory ?? DefaultDirectory, FileName);
+        // 默认位置放在用户数据目录（程序目录下的 UserData），与账号库同目录、升级时一起带走；
+        // 传了 directory（测试用）则原样使用。
+        if (directory is null)
+            UserDataPaths.EnsureReady();
+
+        _path = Path.Combine(directory ?? UserDataPaths.Directory, FileName);
     }
 
     /// <summary>上次读/写失败的原因；成功时为 null。</summary>
@@ -155,47 +162,6 @@ public sealed class FrequentCommandStore
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
         {
             LastError = ex.Message;
-            return false;
-        }
-    }
-
-    /// <summary>exe 目录能写就用它，写不了退到 %LOCALAPPDATA%\MCCX。</summary>
-    private static string DefaultDirectory
-    {
-        get
-        {
-            string exeDirectory = AppContext.BaseDirectory.TrimEnd(
-                Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-
-            if (IsWritable(exeDirectory))
-                return exeDirectory;
-
-            string fallback = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MCCX");
-
-            try
-            {
-                return IsWritable(fallback) ? fallback : exeDirectory;
-            }
-            catch
-            {
-                return exeDirectory;
-            }
-        }
-    }
-
-    private static bool IsWritable(string directory)
-    {
-        try
-        {
-            Directory.CreateDirectory(directory);
-            string probe = Path.Combine(directory, ".mccx-cmd-writetest");
-            File.WriteAllText(probe, string.Empty);
-            File.Delete(probe);
-            return true;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
-        {
             return false;
         }
     }

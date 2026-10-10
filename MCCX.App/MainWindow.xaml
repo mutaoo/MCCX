@@ -21,8 +21,39 @@
         <!--
             不放 TitleBar.IconSource：任务栏/窗口图标已由 ApplicationIcon + AppWindow.SetIcon 提供，
             标题栏再放一处会同时出现两个 logo。
+
+            2026-10-09 需求⑤：左上角程序名之后挂一个「设置」菜单（子菜单先放 Debug 模式开关）。
+            顺序是 LeftHeader → Icon → Title → Content → RightHeader，Title 固定在左、Content 居中，
+            都没法把按钮精确贴在"MCCX"右侧；所以把程序名也一起搬进 LeftHeader（StackPanel 里
+            先 TextBlock 后按钮），Title 留空，顺序与观感都由这一处自己控制。
+            2026-10-09 第四轮反馈：原 DropDownButton 自带下拉箭头和按钮底色，观感突兀 ——
+            换成 MenuBar / MenuBarItem：纯文字菜单栏（和 VS Code 顶部"文件 编辑…"同款），
+            悬停才浮出浅底，点开的还是原来那个 MenuFlyout（Debug 模式开关）。
         -->
-        <TitleBar x:Name="AppTitleBar" Title="MCCX" />
+        <TitleBar x:Name="AppTitleBar">
+            <TitleBar.LeftHeader>
+                <StackPanel Orientation="Horizontal"
+                            Spacing="2"
+                            VerticalAlignment="Center"
+                            Margin="4,0,0,0">
+                    <TextBlock Text="MCCX"
+                               VerticalAlignment="Center"
+                               Style="{ThemeResource CaptionTextBlockStyle}" />
+                    <MenuBar Background="Transparent"
+                             VerticalAlignment="Center">
+                        <!-- 本版 WinUI 的 MenuBarItem：文字用 Title，菜单项直接挂子节点（无 Flyout 包裹） -->
+                        <MenuBarItem x:Name="SettingsButton"
+                                     Title="设置"
+                                     AutomationProperties.Name="设置">
+                            <!-- 2026-10-09 第五轮反馈：状态不打勾，标签后空一格写「开 / 关」 -->
+                            <MenuFlyoutItem x:Name="DebugModeItem"
+                                            Text="Debug 模式 关"
+                                            Click="DebugModeItem_Click" />
+                        </MenuBarItem>
+                    </MenuBar>
+                </StackPanel>
+            </TitleBar.LeftHeader>
+        </TitleBar>
 
         <!--
             The Frame hosts pages for your application content. Add your UI to

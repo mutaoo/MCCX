@@ -19,7 +19,7 @@
    `MCCX.App\bin\Debug\net10.0-windows10.0.26100.0\win-x64\MCCX.exe`
    （`autolib.ps1` 的 `$script:AppExe`，由 `$script:RepoRoot` 推导）。
    ```powershell
-   dotnet build "D:\code\c#\MCCX\MCCX.slnx" -c Debug
+   dotnet build "...\MCCX\MCCX.slnx" -c Debug
    ```
 2. **PowerShell 5.1 执行**，脚本含中文且多为 **UTF-8 with BOM**（迁移时按原编码保留）；
    用 `-ExecutionPolicy Bypass -File` 运行。部分脚本（如 `dump_accounts.ps1`，DPAPI 解密钥）
@@ -108,11 +108,11 @@ pwsh -ExecutionPolicy Bypass -File tests\suites\ver_check.ps1
 
 | 原写法 | 现在 |
 | --- | --- |
-| `C:\Users\ADMING\AppData\Local\Temp\opencode\autolib.ps1` / `uia.ps1` | `"$(Join-Path $PSScriptRoot '..\lib')\..."` |
-| `C:\Users\ADMING\AppData\Local\Temp\opencode\<输出>` | `"$(Join-Path $PSScriptRoot '..\artifacts')\..."` |
-| `D:\code\c#\MCCX\MCCX.App\bin\Debug\...\win-x64` | `"$($script:RepoRoot + '\MCCX.App\bin\Debug\...\win-x64')"` |
-| `D:\code\c#\MCCX\docs\images` | `"$($script:RepoRoot + '\docs\images')"` |
-| `D:\code\c#\MCCX\accounts-stash` | `"$($script:RepoRoot + '\accounts-stash')"` |
+| `%TEMP%\opencode\autolib.ps1` / `uia.ps1` | `"$(Join-Path $PSScriptRoot '..\lib')\..."` |
+| `%TEMP%\opencode\<输出>` | `"$(Join-Path $PSScriptRoot '..\artifacts')\..."` |
+| `...\MCCX\MCCX.App\bin\Debug\...\win-x64` | `"$($script:RepoRoot + '\MCCX.App\bin\Debug\...\win-x64')"` |
+| `...\MCCX\docs\images` | `"$($script:RepoRoot + '\docs\images')"` |
+| `...\MCCX\accounts-stash` | `"$($script:RepoRoot + '\accounts-stash')"` |
 
 并统一在 dot-source autolib 之后补一行：
 `$script:RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)`。
