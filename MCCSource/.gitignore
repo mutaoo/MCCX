@@ -417,6 +417,11 @@ FodyWeavers.xsd
 /MinecraftClient/Resources/Translations/Translations.*.resx
 /MinecraftClient/Resources/AsciiArt/AsciiArt.*.resx
 /MinecraftClient/Resources/ConfigComments/ConfigComments.*.resx
+# MCCX 例外：官方简体中文是产品的一部分（MCCX 子进程把 UICulture 钉成 zh-Hans，见
+# MCCX.Core/Ipc/RunnerHost.cs），必须入库；上游其它语言仍按上面的规则忽略。
+!/MinecraftClient/Resources/Translations/Translations.zh-Hans.resx
+!/MinecraftClient/Resources/AsciiArt/AsciiArt.zh-Hans.resx
+!/MinecraftClient/Resources/ConfigComments/ConfigComments.zh-Hans.resx
 
 /docs/.vuepress/translations/*.json
 !/docs/.vuepress/translations/en.json

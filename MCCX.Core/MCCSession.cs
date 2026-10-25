@@ -1,3 +1,4 @@
+using MCCX.Core.Containers;
 using MCCX.Core.Dialogs;
 using MinecraftClient;
 using MinecraftClient.Dialogs;
@@ -25,6 +26,12 @@ public sealed class MCCSession : IAccountSession
     [
         "exit", "quit", "reco", "reconnect", "restart", "connect", "reload",
     ];
+
+    /// <summary>
+    /// 这条 MCC 内部命令名是否属于"会杀连接/进程"的禁区（命令栏与自动指令共用同一份表）。
+    /// </summary>
+    internal static bool IsBlockedInternalCommand(string? commandName) =>
+        commandName is not null && Array.IndexOf(BlockedInternalCommands, commandName) >= 0;
 
     /// <summary>BotLoad 需要 MCC 主线程响应，超过该时间即认为挂了。</summary>
     private const int BotLoadTimeoutMs = 15000;
@@ -55,6 +62,12 @@ public sealed class MCCSession : IAccountSession
     /// <summary>自动行走开关（2026-10-04 需求：一直朝当前朝向前进，没有参数）。</summary>
     private bool _walkEnabled;
 
+    /// <summary>自动指令总开关（2026-10-22 需求：按各自间隔定时执行指令）。</summary>
+    private bool _autoCommandsEnabled;
+
+    /// <summary>自动指令表（每条自己带间隔与"进服立即执行"；改一次整份下发给 Bot）。</summary>
+    private List<AutoCommandDefinition> _autoCommands = [];
+
     // ---- 服务器信息过滤（2026-10-04 需求）：只拦服务器发来的聊天/系统消息 ----
 
     /// <summary>过滤模式（见 <see cref="ServerFilterMode"/>）；连接成功时包进 <c>McClient.Log</c>。</summary>
@@ -80,6 +93,28 @@ public sealed class MCCSession : IAccountSession
     private AutoRefillBot? _autoRefillBot;
     private AutoWalkBot? _walkBot;
     private ViewControlBot? _viewBot;
+    private AutoCommandBot? _autoCommandBot;
+
+    /// <summary>
+    /// 各功能的“过程日志”开关（2026-10-20 用户要求：开关控制日志的<b>发出</b>）：
+    /// 键见 <see cref="FeatureLogKeys"/>，缺键视为开（老配置不需要迁移）。
+    /// <para>
+    /// 实现是直接改 Bot 的 <c>ChatBot.ProcessLogEnabled</c>——关掉后该功能的过程日志
+    /// 在 Bot 里就不产生，既不进控制台/日志文件，也不会经管道送到界面。
+    /// 旧做法（Bot 照常输出、MCCX 界面按 <c>[标签]</c> 文本吞行）在 MCC 汉化后
+    /// 标签从 <c>AutoFishing</c> 变成 <c>自动钓鱼</c>，匹配失败开关就"看起来失效"。
+    /// </para>
+    /// </summary>
+    private readonly Dictionary<string, bool> _featureLogs = new(StringComparer.Ordinal);
+
+    /// <summary>容器窗口桥（服务器 GUI）：窗口内容 → 界面、界面点击 → MCC。</summary>
+    private WindowBridgeBot? _windowBot;
+
+    /// <summary>
+    /// 界面是不是开着"背包"面板（窗口 0）。记在会话上而不是 Bot 上：
+    /// 重连时 MCC 会换 / 复活 Bot 实例，这里要在挂载后把状态交给它，接着往下推。
+    /// </summary>
+    private bool _windowWatchPlayer;
 
     // ---- 服务器对话框（MCC Dialog 系统，2026-10-03 用户需求：密码要用界面输入框填）----
     private DialogManager? _dialogManager;
@@ -129,6 +164,8 @@ public sealed class MCCSession : IAccountSession
         _backend = backend;
         _accountId = accountId ?? string.Empty;
         _backend.OutputReceived += OnBackendOutput;
+        // MCCX: 服务器命令列表是 ConsoleIO 的静态事件，会话级订阅，Dispose 时摘除
+        MinecraftClient.ConsoleIO.ServerCommandsUpdated += OnServerCommandsUpdated;
     }
 
     /// <summary>当前连接状态（线程安全）。</summary>
@@ -161,6 +198,21 @@ public sealed class MCCSession : IAccountSession
 
     /// <summary>服务器关闭了编号为该值的对话框。可能从任意线程触发。</summary>
     public event Action<int>? DialogClosed;
+
+    /// <summary>
+    /// 服务器命令列表（declare_commands / tab-complete 合并结果）发生变化。
+    /// 载荷是根命令名列表（不含前导 '/'）。可能从任意线程触发。
+    /// </summary>
+    public event Action<IReadOnlyList<string>>? ServerCommandsChanged;
+
+    /// <summary>
+    /// 服务器打开/刷新了一个容器窗口（箱子、商店 GUI 等）。<c>Full</c> 为 true 表示全量快照，
+    /// 否则载荷里只有变化的格子。可能从任意线程触发。
+    /// </summary>
+    public event Action<MccWindowInfo>? WindowChanged;
+
+    /// <summary>服务器关掉了编号为该值的容器窗口。可能从任意线程触发。</summary>
+    public event Action<int>? WindowClosed;
 
     /// <summary>是否已完全进入游戏（可发聊天）。断开后自动回到 false。</summary>
     public bool IsGameJoined => _gameJoined;
@@ -387,7 +439,7 @@ public sealed class MCCSession : IAccountSession
         }
 
         string? internalCommand = GetInternalCommandName(text);
-        if (internalCommand is not null && Array.IndexOf(BlockedInternalCommands, internalCommand) >= 0)
+        if (IsBlockedInternalCommand(internalCommand))
         {
             LogUi($"§e已拦截 /{internalCommand}：在界面里请使用连接/断开按钮。");
             return false;
@@ -455,6 +507,7 @@ public sealed class MCCSession : IAccountSession
                     _autoRefillBot = null;
                     _walkBot = null;
                     _viewBot = null;
+                    _autoCommandBot = null;
                     UnhookDialogs();
                 }
 
@@ -470,6 +523,7 @@ public sealed class MCCSession : IAccountSession
 
         _disposed = true;
         _backend.OutputReceived -= OnBackendOutput;
+        MinecraftClient.ConsoleIO.ServerCommandsUpdated -= OnServerCommandsUpdated;
 
         McClient? client;
         lock (_gate)
@@ -613,6 +667,74 @@ public sealed class MCCSession : IAccountSession
     }
 
     /// <summary>
+    /// 设置自动指令（用户 2026-10-22 需求）：总开关 + 整份指令表。
+    /// 每条指令各自带间隔（秒）与"进服立即执行"；开着时改表立即生效（已连接）。
+    /// </summary>
+    public void ConfigureAutoCommands(bool enabled, IReadOnlyList<AutoCommandDefinition> commands)
+    {
+        ArgumentNullException.ThrowIfNull(commands);
+
+        bool changed;
+        int count;
+        lock (_gate)
+        {
+            changed = _autoCommandsEnabled != enabled;
+            _autoCommandsEnabled = enabled;
+            _autoCommands = [.. commands];
+            count = _autoCommands.Count;
+        }
+
+        if (changed)
+        {
+            LogUi(enabled
+                ? $"§a自动指令已开启：{count} 条指令按各自间隔执行（进服立即执行的会先跑一次）。"
+                : "§8自动指令已关闭。");
+        }
+
+        ApplyAutomation();
+    }
+
+    /// <summary>
+    /// 设置某功能的“过程日志”开关（2026-10-20 用户要求：开关控制日志的<b>发出</b>）。
+    /// <para>
+    /// 已挂载的 Bot 立刻跟着变；尚未挂载（没连上/功能关着）时只记在会话里，
+    /// 之后 Bot 新建或重连认领时会按这里再刷一次。
+    /// 状态提示（“已开启/已就绪/需要××”）不走 <c>LogProcess</c>，关掉日志后仍会显示。
+    /// </para>
+    /// </summary>
+    public void SetFeatureLog(string key, bool enabled)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrEmpty(key);
+
+        lock (_gate)
+        {
+            _featureLogs[key] = enabled;
+
+            ChatBot? bot = key switch
+            {
+                FeatureLogKeys.Attack => _attackBot,
+                FeatureLogKeys.Mouse => _mouseBot,
+                FeatureLogKeys.Fishing => _fishingBot,
+                FeatureLogKeys.Refill => _autoRefillBot,
+                FeatureLogKeys.Walk => _walkBot,
+                FeatureLogKeys.View => _viewBot,
+                _ => null, // reconnect：没有 Bot，日志点自己查开关；自动指令改成了每条指令自己的开关（见 AutoCommandBot）
+            };
+
+            if (bot is not null)
+                bot.ProcessLogEnabled = enabled;
+        }
+    }
+
+    /// <summary>该功能的过程日志是否要发出（缺键 = 开）。</summary>
+    private bool IsFeatureLogEnabled(string key)
+    {
+        lock (_gate)
+            return !_featureLogs.TryGetValue(key, out bool enabled) || enabled;
+    }
+
+    /// <summary>
     /// 设置服务器信息过滤（2026-10-04 用户需求）：全屏蔽 / 只屏蔽玩家消息 / 只显示或只屏蔽指定前缀。
     /// 前缀支持列表（逗号等分隔，命中任一项）。只拦"服务器发来的聊天/系统消息"
     /// （MCC 的 <c>Log.Chat</c> 频道），连接提示与 Bot 日志不受影响；
@@ -646,9 +768,9 @@ public sealed class MCCSession : IAccountSession
                 ServerFilterMode.BlockPlayerChat =>
                     "§a服务器信息过滤：只屏蔽玩家消息（<名字> 开头），系统消息照常显示。",
                 ServerFilterMode.PrefixWhitelist =>
-                    $"§a服务器信息过滤：只显示以「{showPrefix}」开头的消息（多个前缀用逗号分隔，为空等于不过滤）。",
+                    $"§a服务器信息过滤：只显示以「{showPrefix}」开头的消息（多个前缀用逗号或换行分隔，为空等于不过滤）。",
                 ServerFilterMode.BlockPrefix =>
-                    $"§a服务器信息过滤：只屏蔽以「{blockPrefix}」开头的消息（多个前缀用逗号分隔，为空等于全显示）。",
+                    $"§a服务器信息过滤：只屏蔽以「{blockPrefix}」开头的消息（多个前缀用逗号或换行分隔，为空等于全显示）。",
                 _ => "§8服务器信息过滤：不过滤（全部显示）。",
             });
         }
@@ -702,6 +824,97 @@ public sealed class MCCSession : IAccountSession
         SyncAutoRefill(client);
         SyncWalk(client);
         SyncView(client);
+        SyncAutoCommands(client);
+        SyncWindowBridge(client);
+    }
+
+    /// <summary>
+    /// 容器窗口桥：**连上就挂着**（和视角 Bot 一样没有开关）——服务器什么时候开窗口不由我们决定，
+    /// 挂晚了第一个窗口就漏了。窗口内容只是转发给界面，挂机时多一个 Bot 不产生任何动作。
+    /// </summary>
+    private void SyncWindowBridge(McClient client)
+    {
+        WindowBridgeBot? existing = client.GetLoadedChatBots().OfType<WindowBridgeBot>().FirstOrDefault();
+
+        if (existing is null)
+        {
+            existing = new WindowBridgeBot();
+            client.BotLoad(existing);
+        }
+
+        // 幂等挂事件：重连后 MCC 会把旧实例恢复进新连接（botsOnHold），这里认领同一个实例
+        existing.WindowChanged -= OnWindowChanged;
+        existing.WindowClosed -= OnWindowClosed;
+        existing.WindowChanged += OnWindowChanged;
+        existing.WindowClosed += OnWindowClosed;
+
+        bool watchPlayer;
+        lock (_gate)
+        {
+            _windowBot = existing;
+            watchPlayer = _windowWatchPlayer;
+        }
+
+        // 界面开着背包面板时（比如断线自动重连后），把状态交给刚挂上的 Bot 继续推
+        existing.WatchPlayerInventory(watchPlayer);
+    }
+
+    private void OnWindowChanged(MccWindowInfo info) => WindowChanged?.Invoke(info);
+
+    private void OnWindowClosed(int windowId) => WindowClosed?.Invoke(windowId);
+
+    /// <summary>
+    /// 开 / 收"玩家背包"面板。只由界面调用：打开后把玩家背包（窗口 0）当普通窗口内容推过来
+    /// （<see cref="WindowChanged"/>，<c>Player</c> 为 true），收起后停止推。
+    /// 默认是关着的：没人看的时候不该为背包变动往界面发消息。返回是否已投递（没连上时返回 false）。
+    /// </summary>
+    public bool WatchPlayerInventory(bool watch)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        WindowBridgeBot? bot;
+        lock (_gate)
+        {
+            _windowWatchPlayer = watch;
+            bot = _windowBot;
+        }
+
+        if (bot is null)
+            return false;
+
+        bot.WatchPlayerInventory(watch);
+        return true;
+    }
+
+    /// <summary>
+    /// 点容器里的一个格子（或关掉窗口）。返回是否已投递给 MCC。
+    /// 只由界面调用：MCC 的 <c>DoWindowAction</c> 会自己算 stateId 和 changed slots，
+    /// MCCX 不碰协议，也不做节流（服务器对点击有它自己的规则）。
+    /// </summary>
+    public bool WindowClick(MccWindowClick click)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        WindowBridgeBot? bot;
+        bool connected;
+        lock (_gate)
+        {
+            bot = _windowBot;
+            connected = _state == MCCConnectionState.Connected;
+        }
+
+        if (!connected || bot is null)
+        {
+            LogUi("§8当前未连接，容器操作已忽略。");
+            return false;
+        }
+
+        bool close = string.Equals(click.Action, MccWindowAction.Close, StringComparison.Ordinal);
+        bool ok = bot.Click(click.WindowId, click.Slot, click.Action);
+        if (!ok && !close)
+            LogUi($"§e容器窗口 #{click.WindowId} 的这次点击没生效（窗口可能已经被服务器关掉了）。");
+
+        return ok;
     }
 
     /// <summary>
@@ -728,6 +941,8 @@ public sealed class MCCSession : IAccountSession
 
         if (existing is not null)
         {
+            existing.ProcessLogEnabled = IsFeatureLogEnabled(FeatureLogKeys.View);
+
             // 旧实例不会重跑 Initialize，这里补一条状态日志（重连进服的可见反馈）
             existing.AnnounceStatus();
             lock (_gate)
@@ -739,6 +954,7 @@ public sealed class MCCSession : IAccountSession
         }
 
         ViewControlBot created = new(_accountId);
+        created.ProcessLogEnabled = IsFeatureLogEnabled(FeatureLogKeys.View);
         client.BotLoad(created);
         lock (_gate)
         {
@@ -800,8 +1016,14 @@ public sealed class MCCSession : IAccountSession
     /// <paramref name="configure"/> 刷参数（认领来的实例参数可能是断线前的旧值）；
     /// 关着 → 卸载同型实例。返回值直接写回会话字段（null = 未挂载）。
     /// </para>
+    /// <para>
+    /// <paramref name="featureLogKey"/> 非空时，新建/认领的实例都会按会话里的日志开关刷
+    /// <c>ProcessLogEnabled</c>——新建的要在 <c>BotLoad</c> <b>之前</b>刷好，
+    /// 否则 Initialize 里那批过程日志会照发。
+    /// </para>
     /// </summary>
-    private T? SyncBot<T>(McClient client, bool enabled, Func<T> create, Action<T>? configure) where T : ChatBot
+    private T? SyncBot<T>(McClient client, bool enabled, Func<T> create, Action<T>? configure,
+        string? featureLogKey = null) where T : ChatBot
     {
         T? existing = client.GetLoadedChatBots().OfType<T>().FirstOrDefault();
 
@@ -810,7 +1032,13 @@ public sealed class MCCSession : IAccountSession
             if (existing is null)
             {
                 existing = create();
+                if (featureLogKey is not null)
+                    existing.ProcessLogEnabled = IsFeatureLogEnabled(featureLogKey);
                 client.BotLoad(existing);
+            }
+            else if (featureLogKey is not null)
+            {
+                existing.ProcessLogEnabled = IsFeatureLogEnabled(featureLogKey);
             }
 
             configure?.Invoke(existing);
@@ -836,7 +1064,8 @@ public sealed class MCCSession : IAccountSession
 
         CustomAutoAttackBot? bot = SyncBot<CustomAutoAttackBot>(client, enabled,
             create: () => new CustomAutoAttackBot(options),
-            configure: b => b.Options = options);
+            configure: b => b.Options = options,
+            featureLogKey: FeatureLogKeys.Attack);
 
         lock (_gate)
         {
@@ -857,7 +1086,8 @@ public sealed class MCCSession : IAccountSession
 
         MouseControlBot? bot = SyncBot<MouseControlBot>(client, enabled,
             create: () => new MouseControlBot(options),
-            configure: b => b.Options = options);
+            configure: b => b.Options = options,
+            featureLogKey: FeatureLogKeys.Mouse);
 
         lock (_gate)
         {
@@ -882,7 +1112,8 @@ public sealed class MCCSession : IAccountSession
 
         MinecraftClient.ChatBots.AutoFishing? bot = SyncBot<MinecraftClient.ChatBots.AutoFishing>(client, enabled,
             create: () => new MinecraftClient.ChatBots.AutoFishing(),
-            configure: null);
+            configure: null,
+            featureLogKey: FeatureLogKeys.Fishing);
 
         lock (_gate)
         {
@@ -914,7 +1145,8 @@ public sealed class MCCSession : IAccountSession
 
         AutoRefillBot? bot = SyncBot<AutoRefillBot>(client, enabled,
             create: () => new AutoRefillBot(),
-            configure: null);
+            configure: null,
+            featureLogKey: FeatureLogKeys.Refill);
 
         lock (_gate)
         {
@@ -946,8 +1178,14 @@ public sealed class MCCSession : IAccountSession
             if (existing is null)
             {
                 AutoWalkBot created = new(_accountId);
+                created.ProcessLogEnabled = IsFeatureLogEnabled(FeatureLogKeys.Walk);
                 client.BotLoad(created);
                 existing = created;
+            }
+            else
+            {
+                // 认领断线前恢复进新连接的旧实例：日志开关可能在这期间被关掉
+                existing.ProcessLogEnabled = IsFeatureLogEnabled(FeatureLogKeys.Walk);
             }
 
             lock (_gate)
@@ -970,6 +1208,77 @@ public sealed class MCCSession : IAccountSession
             lock (_gate)
             {
                 _walkBot = null;
+            }
+        }
+    }
+
+    /// <summary>
+    /// 自动指令 Bot（2026-10-22 需求）：开 = 挂载 / 关 = 卸载。
+    /// <para>
+    /// 与自动行走一样先"认领/清退"：断线时字段被置空，而上个连接的实例会被 MCC 经静态
+    /// botsOnHold 恢复进新连接（进服时它已经在跑）。开着就接着用它、并刷一遍指令表，
+    /// 关着就卸掉——否则重连后会同时挂两个 Bot，同一批指令发两遍。
+    /// </para>
+    /// </summary>
+    private void SyncAutoCommands(McClient client)
+    {
+        bool enabled;
+        AutoCommandDefinition[] commands;
+
+        lock (_gate)
+        {
+            enabled = _autoCommandsEnabled;
+            commands = [.. _autoCommands];
+        }
+
+        AutoCommandBot? existing = client.GetLoadedChatBots().OfType<AutoCommandBot>()
+            .FirstOrDefault(bot => bot.AccountId == _accountId);
+
+        if (enabled)
+        {
+            if (existing is null)
+            {
+                AutoCommandBot created = new(_accountId);
+                created.SetCommands(commands);
+                client.BotLoad(created);
+
+                // ApplyAutomation 只在进服之后才跑，而 MCC 只在"进服那一刻"回调 AfterGameJoined：
+                // 用户先连上、再打开开关时新挂的 Bot 收不到，必须补一次，否则要等下次重连才开始执行。
+                if (!created.IsJoined)
+                    created.NotifyGameJoined();
+
+                existing = created;
+            }
+            else
+            {
+                // 认领断线前恢复进新连接的旧实例：指令表可能在这期间改过
+                // （过程日志是每条指令自己的开关，在 Bot 里判断，这里不用刷）
+                existing.SetCommands(commands);
+
+                if (!existing.IsJoined)
+                    existing.NotifyGameJoined();
+            }
+
+            lock (_gate)
+            {
+                _autoCommandBot = existing;
+            }
+        }
+        else if (existing is not null)
+        {
+            lock (_gate)
+            {
+                if (ReferenceEquals(_autoCommandBot, existing))
+                    _autoCommandBot = null;
+            }
+
+            client.BotUnLoad(existing);
+        }
+        else
+        {
+            lock (_gate)
+            {
+                _autoCommandBot = null;
             }
         }
     }
@@ -1072,7 +1381,11 @@ public sealed class MCCSession : IAccountSession
                 bool unlimited = live.MaxAttempts <= 0;
                 string limitText = unlimited ? "无限" : live.MaxAttempts.ToString();
                 int delay = AutomationJitter.Apply(live.DelayMs, live.JitterPercent);
-                LogUi($"§e{reason}，{delay / 1000.0:0.#} 秒后自动重连（第 {attempt}/{limitText} 次）…");
+
+                // 过程日志（2026-10-20）：自动重连日志开关关掉时这行不产生。
+                // 结果/状态类提示（已连续失败 N 次、已关闭…）不受影响。
+                if (IsFeatureLogEnabled(FeatureLogKeys.Reconnect))
+                    LogUi($"§e{reason}，{delay / 1000.0:0.#} 秒后自动重连（第 {attempt}/{limitText} 次）…");
 
                 await Task.Delay(delay).ConfigureAwait(false);
 
@@ -1206,6 +1519,15 @@ public sealed class MCCSession : IAccountSession
         }
 
         DialogClosed?.Invoke(revision);
+    }
+
+    /// <summary>服务器命令列表更新（ConsoleIO 静态事件转发给界面层）。可能从任意线程触发。</summary>
+    private void OnServerCommandsUpdated(IReadOnlyList<string> commands)
+    {
+        if (_disposed)
+            return;
+
+        ServerCommandsChanged?.Invoke(commands);
     }
 
     /// <summary>
@@ -1423,7 +1745,35 @@ public sealed class MCCSession : IAccountSession
         StateChanged?.Invoke(state);
 
         if (state == MCCConnectionState.Disconnected)
+        {
+            // 断开后面板已经收掉了（界面在 IsConnected 变 false 时收的），重连时不该自己再冒出来
+            StopPlayerInventoryWatch();
             ScheduleReconnect();
+        }
+    }
+
+    /// <summary>断开时把"背包面板开着"的状态清掉，并让 Bot 停下（Bot 可能已经不在了，忽略即可）。</summary>
+    private void StopPlayerInventoryWatch()
+    {
+        WindowBridgeBot? bot;
+        lock (_gate)
+        {
+            if (!_windowWatchPlayer)
+                return;
+
+            _windowWatchPlayer = false;
+            bot = _windowBot;
+        }
+
+        try
+        {
+            // 只清状态不重发服务器窗口：界面这时候正因为断开在收面板
+            bot?.StopPlayerInventoryWatch();
+        }
+        catch
+        {
+            // Bot 正在拆 / 会话已经没了：没有什么要收的
+        }
     }
 
     private void OnMonitorJoined()
@@ -1461,6 +1811,7 @@ public sealed class MCCSession : IAccountSession
             _autoRefillBot = null;
             _walkBot = null;
             _viewBot = null;
+            _autoCommandBot = null;
             UnhookDialogs();
         }
 
@@ -1537,7 +1888,8 @@ public sealed class MCCSession : IAccountSession
         if (text.Length == 0 || text[0] != '/')
             return null;
 
-        // "//xxx" 表示直接把 "/xxx" 发到服务器聊天，不是内部命令
+        // "//" 开头不算内部命令（2026-10-16 移除 "//xxx=给服务器发 /xxx" 的转义后仍保持这条：
+        // 不在这里拦截，原样交给 MCC 处理，免得误伤 // 开头的普通输入）
         if (text.Length > 1 && text[1] == '/')
             return null;
 

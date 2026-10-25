@@ -2,14 +2,6 @@
 $ErrorActionPreference = 'Stop'
 . "$(Join-Path $PSScriptRoot '..\lib')\autolib.ps1"
 
-function Get-AccountListEl {
-    $l = Find-ById $script:AppRoot 'AccountList'
-    if (-not $l) { throw '找不到账号列表 AccountList' }
-    return $l
-}
-
-function Get-AccountCount { return @(Get-ListItems (Get-AccountListEl)).Count }
-
 function Find-EditByIdSafe {
     param([string]$Id)
     $e = $null
@@ -45,7 +37,7 @@ function Test-LocalServerListening {
 function Ensure-TestServer {
     # D 段要验证“子进程真实连接”，用外网服务器会受其在线状态影响（曾因对方关服导致用例失败）。
     # 改为本地测试服：不在就自己拉起，端口固定 25599，可重复执行。
-    $dir = "$(Join-Path $PSScriptRoot '..\artifacts')\mcserver\1.21.11"
+    $dir = "$(Join-Path $PSScriptRoot '..\artifacts')\mcserver\26.1"
     if (-not (Test-Path (Join-Path $dir 'server.jar'))) { throw "本地测试服缺失: $dir" }
     $props = Join-Path $dir 'server.properties'
     if (Test-Path $props) {
@@ -55,8 +47,7 @@ function Ensure-TestServer {
         Write-Host '  [srv] 本地测试服已在运行 127.0.0.1:25599'
         return
     }
-    $java = (Get-Command java -ErrorAction SilentlyContinue).Source
-    if (-not $java) { throw 'java 不在 PATH，无法启动本地测试服' }
+    $java = Get-TestServerJava
     Start-Process -FilePath $java -ArgumentList '-Xmx1G', '-jar', 'server.jar', 'nogui' `
         -WorkingDirectory $dir -WindowStyle Hidden `
         -RedirectStandardOutput (Join-Path $dir 'test.out.log') `
@@ -175,7 +166,7 @@ $procs = @(Get-Process -Name MCCX -ErrorAction SilentlyContinue).Count
 Assert-True ($procs -ge 2) 'D2 主程序 + 至少一个子进程同时存在' "procs=$procs"
 Write-Host "  -> MCCX 进程数=$procs"
 
-Assert-Log '连接成功' 'D3 子进程连接成功' 60000
+Assert-Connected 'D3 子进程连接成功' 60000
 $stateTxt = ''
 try { $stateTxt = Wait-For -TimeoutMs 30000 -What '状态=已连接' -Probe {
         $x = Get-WindowStateText $script:AppRoot; if ($x -like '已连接*') { $x } else { $null } } } catch { }
@@ -214,7 +205,13 @@ Assert-True (Remove-AccountViaUi 'TestMulti') 'F0 删除走叉号+确认弹窗'
 $null = Wait-For -TimeoutMs 10000 -What 'TestMulti 被删除' -Probe {
     if (-not (Find-ListItemByText (Get-AccountListEl) 'TestMulti')) { 'gone' } else { $null }
 }
-Assert-True ((Get-AccountCount) -eq $before) 'F1 删除后账号数恢复' "count=$(Get-AccountCount) before=$before"
+# 「按文字找不到这一项」和「账号数已经回来」是两件事：行正在被移除的那一瞬间，
+# Find-ListItemByText 可能已经查不到文字，但 UIA 的 ListItem 还在树里 → 点数还是旧的。
+# 所以点数走公共库的 Wait-AccountCount（等 UI 结算，超时返回当前值让断言照常失败）。
+# 另外别在断言里连着调两次 Get-AccountCount（条件一次、失败详情一次）：那样报出来的
+# count 是第二次采的值，会看到 "count=13 before=13 却 FAIL" 这种看不懂的失败（2026-10-18 实测踩到）。
+$now = Wait-AccountCount -Expect $before -TimeoutMs 10000
+Assert-True ($now -eq $before) 'F1 删除后账号数恢复' "count=$now before=$before"
 
 $null = Wait-For -TimeoutMs 20000 -What '子进程被回收' -Probe {
     $n = @(Get-Process -Name MCCX -ErrorAction SilentlyContinue).Count
@@ -225,7 +222,8 @@ Write-Host 'F2 子进程已回收（仅剩主程序）OK'
 # ============ G. 重启后列表与删除结果都持久化 ============
 $null = Restart-App
 Save-Foreground
-Assert-True ((Get-AccountCount) -eq $before) 'G1 重启后账号数不变' "count=$(Get-AccountCount) before=$before"
+$now2 = Get-AccountCount
+Assert-True ($now2 -eq $before) 'G1 重启后账号数不变' "count=$now2 before=$before"
 Assert-True ($null -eq (Find-ListItemByText (Get-AccountListEl) 'TestMulti')) 'G2 测试账号删除已持久化'
 Assert-True ((Get-EditValueSafe 'ServerBox') -ne 'TestMulti') 'G3 重启后右侧面板正常显示'
 

@@ -70,8 +70,9 @@ public sealed class ServerFilterLogger : ILogger
     }
 
     /// <summary>
-    /// 前缀列表解析：逗号（中英文）、顿号、竖线分隔，逐项去首尾空白、丢空项。
-    /// 单个前缀原样工作（老配置与单前缀用法完全不受影响）。
+    /// 前缀列表解析：逗号（中英文）、顿号、竖线、换行分隔，逐项去首尾空白、丢空项。
+    /// 单个前缀原样工作（老配置与单前缀用法完全不受影响）；2026-10-21 起支持换行，
+    /// 多行编辑器里"一行一个前缀"可以直接用。
     /// </summary>
     private static string[] ParsePrefixes(string? prefix)
     {
@@ -79,7 +80,7 @@ public sealed class ServerFilterLogger : ILogger
             return [];
 
         string[] parts = prefix.Split(
-            [',', '，', '、', '|'],
+            [',', '，', '、', '|', '\r', '\n'],
             StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         return parts.Length == 0 ? [] : parts;
     }

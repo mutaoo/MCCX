@@ -136,14 +136,14 @@ public sealed class AutoRefillBot : ChatBot
         // 容器开着时槽位语义是那个窗口的，直接跳过最稳
         if (GetInventories().Count > 1)
         {
-            LogToConsole("§7[自动补充] 有容器窗口开着，这次先不补。");
+            LogProcess("§7[自动补充] 有容器窗口开着，这次先不补。");
             return;
         }
 
         // 光标必须是空的：光标上有东西时左键会把它一起搅进去
         if (inv.Items.TryGetValue(-1, out Item? cursor) && cursor is not null && !cursor.IsEmpty)
         {
-            LogToConsole("§7[自动补充] 光标上有物品，这次先不补。");
+            LogProcess("§7[自动补充] 光标上有物品，这次先不补。");
             return;
         }
 
@@ -152,7 +152,7 @@ public sealed class AutoRefillBot : ChatBot
 
         if (source < 0)
         {
-            LogToConsole($"§7[自动补充] {name} 用完了，背包里没有同款，暂不补充。");
+            LogProcess($"§7[自动补充] {name} 用完了，背包里没有同款，暂不补充。");
             return;
         }
 
@@ -167,7 +167,7 @@ public sealed class AutoRefillBot : ChatBot
             return;
         }
 
-        LogToConsole($"§a[自动补充] {name} 用完了，已从{DescribeSlot(source)}补到手上。");
+        LogProcess($"§a[自动补充] {name} 用完了，已从{DescribeSlot(source)}补到手上。");
     }
 
     /// <summary>找同款物品：主背包 9-35 优先，其次其他快捷栏格（用户确认的范围，副手不参与）。</summary>

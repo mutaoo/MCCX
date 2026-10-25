@@ -17,7 +17,10 @@ internal static class Program
     private static int Main(string[] args)
     {
         if (args.Length > 0 && string.Equals(args[0], "--runner", StringComparison.Ordinal))
-            return RunnerHost.Run(GetOption(args, "--cmd"), GetOption(args, "--evt"), GetOption(args, "--account"));
+        {
+            int parentPid = int.TryParse(GetOption(args, "--parent"), out int pid) ? pid : 0;
+            return RunnerHost.Run(GetOption(args, "--cmd"), GetOption(args, "--evt"), GetOption(args, "--account"), parentPid);
+        }
 
         global::WinRT.ComWrappersSupport.InitializeComWrappers();
         global::Microsoft.UI.Xaml.Application.Start(_ =>

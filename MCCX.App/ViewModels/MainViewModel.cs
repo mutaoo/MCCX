@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using MCCX.Core;
+using MCCX.Core.Containers;
 using MCCX.Core.Dialogs;
 using MCCX.Core.Networking;
 using Microsoft.UI.Dispatching;
@@ -32,6 +33,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         nameof(StateText),
         nameof(LatencyText),
         nameof(IsConnected),
+        nameof(CanEditConnection),
         nameof(AttackEnabled),
         nameof(AttackRange),
         nameof(AttackCooldownMin),
@@ -68,6 +70,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         // AutoRefillEnabled 之前漏登记了（切换账号时"自动补充"开关不刷新），随本次补上
         nameof(AutoRefillEnabled),
         nameof(AutoWalkEnabled),
+        nameof(AutoCommandsEnabled),
+        nameof(AutoCommands),
         nameof(ServerFilterModeIndex),
         nameof(ServerFilterShowPrefix),
         nameof(ServerFilterBlockPrefix),
@@ -252,6 +256,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     /// <summary>界面订阅：服务器关闭了某账号编号为该值的对话框（输入框要跟着收）。</summary>
     public event Action<AccountViewModel, int>? CloseServerDialog;
 
+    /// <summary>界面订阅：某账号的服务器打开了容器窗口（箱子/商店 GUI），要弹容器面板。</summary>
+    public event Action<AccountViewModel, MccWindowInfo>? WindowChanged;
+
+    /// <summary>界面订阅：服务器关掉了某账号的容器窗口（面板要跟着收）。</summary>
+    public event Action<AccountViewModel, int>? WindowClosed;
+
     /// <summary>常用命令列表（左边命令栏“常用命令”按钮的下拉内容）。</summary>
     public ObservableCollection<FrequentCommand> FrequentCommands { get; } = [];
 
@@ -356,6 +366,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public string LatencyText => Pick(a => a.LatencyText, "延迟 --");
 
     public bool IsConnected => Pick(a => a.IsConnected, false);
+
+    /// <summary>
+    /// “服务器 / 端口 / 用户名 / 版本”这几个框可不可以改（2026-10-18 需求：连接中 / 已连接 / 断开中一律禁用）。
+    /// 选中账号按它自己的连接状态算；没有选中账号时给 true（那种情况下参数行整块是收起的，值取不到）。
+    /// </summary>
+    public bool CanEditConnection => Pick(a => a.CanEditConnection, true);
 
     public ObservableCollection<LogEntry> Logs => Pick(a => a.Logs, _noAccountLogs);
 
@@ -674,6 +690,33 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    /// <summary>自动指令总开关（2026-10-22 需求：按各自间隔定时执行指令）。</summary>
+    public bool AutoCommandsEnabled
+    {
+        get => Pick(a => a.AutoCommandsEnabled, false);
+        set
+        {
+            if (SelectedAccount is { } account)
+                account.AutoCommandsEnabled = value;
+        }
+    }
+
+    /// <summary>
+    /// 自动指令列表（2026-10-22 需求）：直接暴露选中账号的集合，弹层里的
+    /// ItemsControl 绑它；切换账号时经 <see cref="ProxyNames"/> 重新绑定。
+    /// </summary>
+    public ObservableCollection<AutoCommandItem> AutoCommands =>
+        SelectedAccount?.AutoCommands ?? NoAutoCommands;
+
+    /// <summary>没有选中账号时列表的占位（空）。</summary>
+    private static readonly ObservableCollection<AutoCommandItem> NoAutoCommands = [];
+
+    /// <summary>弹层里的「新建指令」。</summary>
+    public void AddAutoCommand() => SelectedAccount?.AddAutoCommand();
+
+    /// <summary>删掉一条指令（行尾 ×）。</summary>
+    public void RemoveAutoCommand(AutoCommandItem item) => SelectedAccount?.RemoveAutoCommand(item);
+
     // —— 各功能的"过程日志"开关（2026-10-08 需求：Bot 日志刷屏，每个功能可单独关）——
     // 默认 true：没有选中账号时面板显示"开"，与账号库里"缺键 = 开"的口径一致。
 
@@ -906,6 +949,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         account.CommandSent += OnAccountCommandSent;
         account.DialogRequested += OnAccountDialogRequested;
         account.DialogClosed += OnAccountDialogClosed;
+        account.WindowChanged += OnAccountWindowChanged;
+        account.WindowClosed += OnAccountWindowClosed;
         return account;
     }
 
@@ -916,6 +961,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         account.CommandSent -= OnAccountCommandSent;
         account.DialogRequested -= OnAccountDialogRequested;
         account.DialogClosed -= OnAccountDialogClosed;
+        account.WindowChanged -= OnAccountWindowChanged;
+        account.WindowClosed -= OnAccountWindowClosed;
     }
 
     private void ReloadAccounts()
@@ -991,8 +1038,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             Accounts.Add(existing);
         }
 
-        SelectedAccount = existing;
+        // 先重建列表源（把新账号放进 ListView 的数据源），再设选中项。
+        // 反过来的话，RebuildAccountListSource 里的 Clear 会让 ListView 的 SelectedItem 先变 null，
+        // TwoWay 回写把 SelectedAccount 清掉 → 右侧面板整块隐藏（p_multi B7 / p_blank 抓到）。
+        // 删除路径 DeleteAccount 本来就是"先重建再选中"，这里对齐。
         RebuildAccountListSource();
+
+        SelectedAccount = existing;
         existing.WriteNote($"§8已添加账号 {existing.DisplayName}（{existing.ServerSummary}）。");
 
         if (autoConnect)
@@ -1114,6 +1166,14 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private void OnAccountDialogClosed(AccountViewModel account, int revision)
         => CloseServerDialog?.Invoke(account, revision);
 
+    /// <summary>某账号的服务器打开了容器窗口 → 转发给界面弹容器面板。</summary>
+    private void OnAccountWindowChanged(AccountViewModel account, MccWindowInfo info)
+        => WindowChanged?.Invoke(account, info);
+
+    /// <summary>服务器关掉了某账号的容器窗口 → 转发给界面收掉面板。</summary>
+    private void OnAccountWindowClosed(AccountViewModel account, int windowId)
+        => WindowClosed?.Invoke(account, windowId);
+
     #region 常用命令
 
     /// <summary>自动记录一条发出过的命令：只记 MCC 内部命令，含口令的一律不记。</summary>
@@ -1225,9 +1285,20 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             m.Left.Enabled, m.Left.Mode, m.Left.HoldMs, m.Left.IntervalMs, m.Left.JitterPercent,
             m.Right.Enabled, m.Right.Mode, m.Right.HoldMs, m.Right.IntervalMs, m.Right.JitterPercent,
             p.FishingEnabled, f.SoundDetection, f.VelocityDetection, f.TimeoutSeconds, f.CastDelaySeconds,
-            p.AutoRefillEnabled, p.AutoWalkEnabled, p.ServerFilterMode,
-            p.ServerFilterShowPrefix, p.ServerFilterBlockPrefix,
+            p.AutoRefillEnabled, p.AutoWalkEnabled, p.ServerFilterMode, p.ServerFilterShowPrefix, p.ServerFilterBlockPrefix,
             r.Enabled, r.MaxAttempts, r.DelayMs,
+            // 自动指令（2026-10-22）：开关 + 每条（文本/间隔/进服立即执行/循环-只执行一次/次数/日志），
+            // 顺序也要进签名——否则"只调换了两条的顺序"会被节流判定成没变化。
+            // 2026-10-22 第二轮踩的坑：漏了 Loop/RepeatCount/LogEnabled，只动"每条日志开关"或
+            // "执行方式/次数"时签名不变 → OnAccountParametersChanged 走"值没变"提前返回 → 不落盘，
+            // 重启后开关又全变回默认（用户报的"重启后要重新拨一次"的同款症状，只是这次是本功能的字段）。
+            // 服务器登录密码（2026-10-23）：只把"有没有 / 是哪一份"放进签名（哈希不落盘、不进日志），
+            // 否则只勾一下"记住密码/自动登录"会被节流判定成没变化，重启后又变回没勾。
+            p.RememberServerPassword, p.AutoLoginServer,
+            p.ServerPassword is null ? 0 : p.ServerPassword.GetHashCode(),
+            p.AutoCommandsEnabled,
+            string.Join(';', (p.AutoCommands ?? []).Select(c =>
+                $"{c.Text}~{c.IntervalSeconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)}~{c.RunOnJoin}~{c.Loop}~{c.RepeatCount}~{c.LogEnabled}")),
             // 功能日志开关：字典按键排序，保证同一份配置永远得到同一串签名，
             // 否则"关掉日志开关"可能被节流判定成"没变化"而不落盘。
             string.Join(',', p.FeatureLogSwitches.OrderBy(kv => kv.Key, StringComparer.Ordinal)

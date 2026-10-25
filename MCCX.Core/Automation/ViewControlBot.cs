@@ -346,7 +346,7 @@ internal sealed class ViewControlBot : ChatBot
 
             _guardYaw = candidate;
             _guardPitch = fromSample ? _guardFirstPitch : _joinPitch;
-            LogToConsole($"§8[视角] 守卫锚定 yaw {_guardYaw:0.#}（服务器记住的朝向；{GuardTicks / 20} 秒窗口内被改走会自动钉回，除非你自己点了视角按钮或开了自动行走）。");
+            LogToConsole($"§8[视角] 守卫锚定 yaw {_guardYaw:0.#}（服务器记住的朝向；{GuardTicks / 20} 秒窗口内被改走会自动钉回，除非使用会改变视角的Bot）。");
             return;
         }
 
@@ -363,7 +363,7 @@ internal sealed class ViewControlBot : ChatBot
         {
             _guardPinCount++;
             if (_guardPinCount == 1)
-                LogToConsole($"§8[视角] 进服 {GuardTicks / 20} 秒内朝向被改到 yaw {yaw:0.#}（非按钮、非自动行走所致），已钉回 yaw {_guardYaw:0.#}。");
+                LogProcess($"§8[视角] 进服 {GuardTicks / 20} 秒内朝向被改到 yaw {yaw:0.#}（非Bot所致），已钉回 yaw {_guardYaw:0.#}。");
         }
     }
 
@@ -425,7 +425,7 @@ internal sealed class ViewControlBot : ChatBot
         bool sent = TrySetView(yaw, pitch);
 
         // "当前 yaw" = 点击当拍的客户端朝向：诊断用（被行走压住的旧朝向会在这里现形）
-        LogToConsole(sent
+        LogProcess(sent
             ? $"§8[视角] 已转向{LabelOf(direction)}（yaw {yaw:0.#}，pitch {pitch:0.#}，当前 yaw {GetYaw():0.#}）。"
             : $"§e[视角] 转向{LabelOf(direction)}未送达（连接未就绪），保持期内会自动重试。");
     }

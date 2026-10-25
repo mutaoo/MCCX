@@ -1,8 +1,9 @@
+using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
 using System.Globalization;
-using System.Text.RegularExpressions;
 using System.Windows.Input;
 using MCCX.Core;
+using MCCX.Core.Containers;
 using MCCX.Core.Dialogs;
 using MCCX.Core.Ipc;
 using MCCX.Core.Networking;
@@ -20,9 +21,16 @@ namespace MCCX_App.ViewModels;
 /// </summary>
 public sealed class AccountViewModel : ObservableObject, IDisposable
 {
-    /// <summary>日志最大保留行数，超出后按批裁剪，避免长时间挂机内存无限增长。</summary>
-    private const int MaxLogLines = 1000;
+    /// <summary>
+    /// 日志最大保留行数，超出后按批裁剪，避免长时间挂机内存无限增长。
+    ///
+    /// 2026-10-18：日志区改成虚拟化列表（D 方案，见 `MainPage.Log.cs`）后，**渲染代价只和可见行数
+    /// 有关、和总行数无关**（10 万行实测每次刷新 0.4~1.8 ms，容器恒 25 个），所以这个上限不再是
+    /// 性能阀门，只剩"内存 + 搜索全表扫描"两件事——1 万行约几 MB、搜索扫描亚毫秒，于是从 1000 放宽到 10000。
+    /// </summary>
+    private const int MaxLogLines = 10000;
 
+    /// <summary>裁剪按批做（一次删这么多），避免每来一行就删一行（每条删除都会发一次集合通知）。</summary>
     private const int LogTrimBatch = 100;
 
     private readonly IAccountSession _session;
@@ -42,6 +50,10 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
     /// <summary>延迟探测循环的取消源（连上开、断开停）。</summary>
     private CancellationTokenSource? _latencyCts;
     private bool _isConnected;
+
+    /// <summary>“服务器 / 端口 / 用户名 / 版本”这几个输入框能不能改（见 <see cref="CanEditConnection"/>）。</summary>
+    private bool _canEditConnection = true;
+
     private bool _disposed;
 
     // ---- 命令输入历史（上/下方向键翻上一条、下一条）----
@@ -86,6 +98,9 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
         _session.StateChanged += OnStateChanged;
         _session.DialogRequested += OnDialogRequested;
         _session.DialogClosed += OnDialogClosed;
+        _session.WindowChanged += OnWindowChanged;
+        _session.WindowClosed += OnWindowClosed;
+        _session.ServerCommandsChanged += OnServerCommandsChanged;
 
         if (_session is RunnerProcess runner)
             runner.ProcessExited += OnProcessExited;
@@ -100,8 +115,10 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
             ApplyFishing();
             ApplyAutoRefill();
             ApplyWalk();
+            ApplyAutoCommands();
             ApplyServerFilter();
             ApplyReconnect();
+            ApplyFeatureLogs();
         }
         finally
         {
@@ -161,6 +178,16 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
 
         _autoRefillEnabled = profile.AutoRefillEnabled;
         _autoWalkEnabled = profile.AutoWalkEnabled;
+        _autoCommandsEnabled = profile.AutoCommandsEnabled;
+
+        // 服务器登录密码（2026-10-23 需求）：老账号库没有这些字段时保持默认（不记住、不自动登录）
+        _rememberServerPassword = profile.RememberServerPassword;
+        _autoLoginServer = profile.AutoLoginServer && profile.RememberServerPassword;
+        _serverPassword = profile.RememberServerPassword ? profile.ServerPassword : null;
+
+        // 自动指令表（2026-10-22）：老账号库没有该字段时为空表，界面显示"还没有指令"
+        foreach (AutoCommandDefinition command in profile.AutoCommands ?? [])
+            AutoCommands.Add(new AutoCommandItem(command, OnAutoCommandEdited));
         _serverFilterModeIndex = Math.Clamp(profile.ServerFilterMode, 0, 4);
 
         // 2026-10-05：只显示 / 只屏蔽 改成两份独立前缀。老账号库里只有一份
@@ -222,6 +249,12 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
 
     /// <summary>服务器关闭了编号为该值的对话框（已切到 UI 线程）。</summary>
     public event Action<AccountViewModel, int>? DialogClosed;
+
+    /// <summary>服务器打开/刷新了容器窗口（已切到 UI 线程）：界面据此弹出容器面板。</summary>
+    public event Action<AccountViewModel, MccWindowInfo>? WindowChanged;
+
+    /// <summary>服务器关掉了编号为该值的容器窗口（已切到 UI 线程）。</summary>
+    public event Action<AccountViewModel, int>? WindowClosed;
 
     public string Id => _profile.Id;
 
@@ -313,6 +346,18 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
         }
     }
 
+    /// <summary>
+    /// 服务器命令列表（declare_commands / tab-complete 合并结果，根命令名、无前导 '/'）。
+    /// 断开后清空。输入框的命令建议用它 + <c>MccCommandCatalog.Commands</c> 合并。
+    /// </summary>
+    public IReadOnlyList<string> ServerCommands
+    {
+        get => _serverCommands;
+        private set => SetProperty(ref _serverCommands, value);
+    }
+
+    private IReadOnlyList<string> _serverCommands = Array.Empty<string>();
+
     public string StateText
     {
         get => _stateText;
@@ -355,6 +400,23 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
         }
     }
 
+    /// <summary>
+    /// “服务器 / 端口 / 用户名 / 版本”这几个输入框可不可以改（2026-10-18 需求：
+    /// 连接中 / 已连接 / 断开中一律禁用，只有彻底没连的时候才让改）。
+    ///
+    /// <para>口径跟着 <see cref="MCCConnectionState"/> 走，而不是 <see cref="IsConnected"/>：
+    /// "连接中"和"断开中"都算在这个连接的半路上，这时候改地址只会让人以为改动立刻生效
+    /// （其实要下一次连接才用得上），所以一起禁用。</para>
+    ///
+    /// <para>连接 / 断开两个按钮不受它影响：那两个按钮的可用性本来就是
+    /// <see cref="ConnectCommand"/> / <see cref="DisconnectCommand"/> 自己按状态算的。</para>
+    /// </summary>
+    public bool CanEditConnection
+    {
+        get => _canEditConnection;
+        private set => SetProperty(ref _canEditConnection, value);
+    }
+
     #endregion
 
     #region 自动化（需求 3.2）
@@ -392,6 +454,9 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
 
     /// <summary>自动行走开关（2026-10-04 需求：一直朝当前朝向前进）。</summary>
     private bool _autoWalkEnabled;
+
+    /// <summary>自动指令总开关（2026-10-22 需求：按各自间隔定时执行指令）。</summary>
+    private bool _autoCommandsEnabled;
 
     // ---- 服务器信息过滤（2026-10-04 需求：全屏蔽 / 只屏蔽玩家消息 / 只显示指定前缀 / 只屏蔽指定前缀）----
     private int _serverFilterModeIndex;
@@ -802,6 +867,63 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>
+    /// 自动指令表（2026-10-22 需求）：界面上的每一行。改行内任何值都会经
+    /// <see cref="OnAutoCommandEdited"/> 整份重新下发并落盘。
+    /// </summary>
+    public ObservableCollection<AutoCommandItem> AutoCommands { get; } = [];
+
+    /// <summary>自动指令总开关：开着才按间隔执行（进服立即执行也受它管）。</summary>
+    public bool AutoCommandsEnabled
+    {
+        get => _autoCommandsEnabled;
+        set
+        {
+            if (SetProperty(ref _autoCommandsEnabled, value))
+                ApplyAutoCommands();
+        }
+    }
+
+    /// <summary>某条指令被编辑（文本 / 间隔 / 进服立即执行）：重新下发 + 落盘。</summary>
+    private void OnAutoCommandEdited() => ApplyAutoCommands();
+
+    /// <summary>
+    /// 新增一条空指令（默认 60 秒、不勾"进服立即执行"）。
+    /// 文本留空也照样留在列表里，等用户填；子进程侧会把空文本条目忽略掉。
+    /// </summary>
+    public void AddAutoCommand()
+    {
+        // 上限跟子进程/落盘用的常量对齐：再多就是误操作，界面上也不给加（弹层本来就要滚）。
+        if (AutoCommands.Count >= AutoCommandBot.MaxCommands)
+            return;
+
+        AutoCommands.Add(new AutoCommandItem(
+            new AutoCommandDefinition { Text = string.Empty, IntervalSeconds = 60, RunOnJoin = false },
+            OnAutoCommandEdited));
+
+        ApplyAutoCommands();
+    }
+
+    /// <summary>删掉一条指令（行尾的 ×）。</summary>
+    public void RemoveAutoCommand(AutoCommandItem item)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+
+        if (AutoCommands.Remove(item))
+            ApplyAutoCommands();
+    }
+
+    /// <summary>把当前开关 + 整份指令表下发给会话（构造期回填与用户改动共用）。</summary>
+    private void ApplyAutoCommands()
+    {
+        _session.ConfigureAutoCommands(_autoCommandsEnabled, BuildAutoCommands());
+        NotifyParametersChanged();
+    }
+
+    /// <summary>当前列表 → 下发/落盘用的模型。</summary>
+    private List<AutoCommandDefinition> BuildAutoCommands() =>
+        [.. AutoCommands.Select(item => item.ToDefinition())];
+
+    /// <summary>
     /// 服务器信息过滤模式（2026-10-04 需求）：0 不过滤 / 1 全屏蔽 / 2 只屏蔽玩家消息 / 3 只显示指定前缀 / 4 只屏蔽指定前缀。
     /// 改了立刻下发——已连接的会话把过滤器即时改掉，不用重连。
     /// </summary>
@@ -861,6 +983,9 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
     ///
     /// 存在 <c>AccountProfile.FeatureLogSwitches</c> 里，<b>每个账号各存一份</b>。
     /// 缺键视为“开”，所以老账号库读进来就是全开，不需要迁移。
+    ///
+    /// 2026-10-20：开关的落点从"界面过滤"改成"日志发出"——值下发到子进程，
+    /// 由 Bot 的 <c>ProcessLogEnabled</c> 决定这批过程日志生不产生。
     /// </summary>
     private bool GetLogSwitch(string key) =>
         !_profile.FeatureLogSwitches.TryGetValue(key, out bool show) || show;
@@ -872,8 +997,28 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
             return false;
 
         _profile.FeatureLogSwitches[key] = show;
+
+        // 2026-10-20：开关直接下发到会话，由 Bot 决定日志发不发（不再事后按文本过滤）。
+        // 未连接/功能关着时子进程只记账，Bot 挂载时会按这份开关刷 ProcessLogEnabled。
+        _session.SetFeatureLog(key, show);
+
         NotifyParametersChanged();
         return true;
+    }
+
+    /// <summary>
+    /// 构造期/账号参数回填：把七个功能的日志开关一次性推给会话
+    /// （子进程按配置记账，晚启动、重启都会补发，不需要等用户再点一次开关）。
+    /// </summary>
+    private void ApplyFeatureLogs()
+    {
+        _session.SetFeatureLog(FeatureLogKeys.Attack, AttackLogEnabled);
+        _session.SetFeatureLog(FeatureLogKeys.Mouse, MouseLogEnabled);
+        _session.SetFeatureLog(FeatureLogKeys.Fishing, FishingLogEnabled);
+        _session.SetFeatureLog(FeatureLogKeys.Refill, RefillLogEnabled);
+        _session.SetFeatureLog(FeatureLogKeys.Walk, WalkLogEnabled);
+        _session.SetFeatureLog(FeatureLogKeys.View, ViewLogEnabled);
+        _session.SetFeatureLog(FeatureLogKeys.Reconnect, ReconnectLogEnabled);
     }
 
     /// <summary>自动砍怪的过程日志。</summary>
@@ -1286,10 +1431,58 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
 
     #region 服务器对话框（密码用界面输入框填）
 
+    /// <summary>记住密码（2026-10-23 需求）：服务器弹密码框时自动填上次记住的那份。</summary>
+    private bool _rememberServerPassword;
+
+    /// <summary>自动登录：密码框弹出后自动填入并等 1 秒再点登录（需先勾"记住密码"）。</summary>
+    private bool _autoLoginServer;
+
+    /// <summary>记住的服务器登录密码；没勾"记住密码"时为 null。随账号库加密保存。</summary>
+    private string? _serverPassword;
+
+    /// <summary>是否勾了"记住密码"。</summary>
+    public bool RememberServerPassword => _rememberServerPassword;
+
+    /// <summary>是否勾了"自动登录"（只在"记住密码"也勾着时才可能为真）。</summary>
+    public bool AutoLoginServer => _autoLoginServer;
+
+    /// <summary>记住的服务器登录密码（没记住时为 null）。</summary>
+    public string? ServerPassword => _serverPassword;
+
+    /// <summary>
+    /// 密码框下方两个勾选框的提交：把"记住密码 / 自动登录 / 密码"一起写回账号资料。
+    /// 不勾"记住密码"时顺手把已存的密码清掉（否则下次还会被填出来，用户会觉得"取消不生效"）。
+    /// </summary>
+    public void SaveServerPassword(bool remember, bool autoLogin, string? password)
+    {
+        string? stored = remember && !string.IsNullOrEmpty(password) ? password : null;
+        bool auto = remember && autoLogin;
+
+        bool changed = _rememberServerPassword != remember
+            || _autoLoginServer != auto
+            || !string.Equals(_serverPassword, stored, StringComparison.Ordinal);
+
+        _rememberServerPassword = remember;
+        _autoLoginServer = auto;
+        _serverPassword = stored;
+
+        if (changed)
+            NotifyParametersChanged();
+    }
+
     private MccDialogInfo? _pendingDialog;
 
     /// <summary>服务器弹了对话框但当前账号没被选中时先存这儿，切过来再弹。</summary>
     public MccDialogInfo? PendingDialog => _pendingDialog;
+
+    /// <summary>
+    /// 当前还开着的容器窗口快照（没开就是 null；增量已经并进这里）。
+    /// 切换账号回来时界面用它重画整窗，子进程不会为"切回来"重发一次。
+    /// </summary>
+    private MccWindowInfo? _windowSnapshot;
+
+    /// <summary>当前还开着的容器窗口快照。</summary>
+    public MccWindowInfo? WindowSnapshot => _windowSnapshot;
 
     /// <summary>把界面填好的取值写回会话并点动作（密码不进日志、不进聊天）。返回是否成功。</summary>
     public bool SubmitDialog(IReadOnlyDictionary<string, string> values, int actionIndex)
@@ -1329,9 +1522,47 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
         }
     }
 
+    /// <summary>
+    /// 界面点了容器窗口里的一个格子（或关掉窗口）。与对话框一样不走聊天/命令通道。
+    /// 返回是否已投递。
+    /// </summary>
+    public bool WindowClick(MccWindowClick click)
+    {
+        try
+        {
+            return _session.WindowClick(click);
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"§c容器窗口操作失败：{ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 界面开了 / 收了"背包"面板：打开会话把玩家背包（窗口 0：装备 + 背包 + 快捷栏）推过来。
+    /// 与容器点击一样不走聊天/命令通道。
+    /// </summary>
+    public void WatchPlayerInventory(bool watch)
+    {
+        try
+        {
+            _session.WatchPlayerInventory(watch);
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"§c背包面板操作失败：{ex.Message}");
+        }
+    }
+
     #endregion
 
-    private void ClearLog() => Logs.Clear();
+    private void ClearLog()
+    {
+        // 缓冲区里可能还有没搬过来的行，一起清掉（否则清完又冒出来一段）
+        _logBuffer.Clear();
+        Logs.Clear();
+    }
 
     #endregion
 
@@ -1393,6 +1624,8 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
             Fishing = BuildFishingOptions(),
             AutoRefillEnabled = _autoRefillEnabled,
             AutoWalkEnabled = _autoWalkEnabled,
+            AutoCommandsEnabled = _autoCommandsEnabled,
+            AutoCommands = BuildAutoCommands(),
             // 功能日志开关必须一起带走：漏了这里，保存时会用空字典覆盖，
             // 表现就是“开关关了，重新打开程序又全开”。
             FeatureLogSwitches = new Dictionary<string, bool>(_profile.FeatureLogSwitches),
@@ -1400,6 +1633,10 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
             ServerFilterShowPrefix = _serverFilterShowPrefix,
             ServerFilterBlockPrefix = _serverFilterBlockPrefix,
             Reconnect = BuildReconnectOptions(),
+            // 服务器登录密码（2026-10-23 需求）：必须一起带走，否则保存账号时会被覆盖掉
+            ServerPassword = _serverPassword,
+            RememberServerPassword = _rememberServerPassword,
+            AutoLoginServer = _autoLoginServer,
 
             CreatedAt = _profile.CreatedAt,
             LastUsedAt = DateTimeOffset.Now,
@@ -1459,10 +1696,56 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
 
     #region 日志与状态
 
+    /// <summary>还没搬进 <see cref="Logs"/> 的原始日志（子进程管道线程写入）。</summary>
+    private readonly ConcurrentQueue<string> _logBuffer = new();
+
+    /// <summary>0 = 还没排队，1 = 已派发一次 UI 回调（合并用，见 <see cref="OnLogReceived"/>）。</summary>
+    private int _logFlushScheduled;
+
+    /// <summary>单次回调最多搬多少段（再多就留到下一轮，别让一次回调占住界面线程太久）。</summary>
+    private const int LogFlushBudget = 2000;
+
     private void OnLogReceived(string rawText)
     {
-        // 子进程管道线程 / MCC 线程 → UI 线程
-        _dispatcherQueue.TryEnqueue(() => AppendLog(rawText));
+        if (_disposed || rawText.Length == 0)
+            return;
+
+        _logBuffer.Enqueue(rawText);
+
+        // 2026-10-23：多开时每个子进程都可能每秒刷几十行。旧写法是"一行一个 DispatcherQueue 回调"，
+        // 界面线程一旦跟不上，队列越堆越长，表现就是窗口"未响应"（关都关不掉）。
+        // 现在先进缓冲区，一帧只派发一次回调，一次搬一批。
+        if (Interlocked.Exchange(ref _logFlushScheduled, 1) == 0
+            && !_dispatcherQueue.TryEnqueue(FlushPendingLogs))
+        {
+            Interlocked.Exchange(ref _logFlushScheduled, 0);
+        }
+    }
+
+    /// <summary>把缓冲区里的日志一次性搬进 <see cref="Logs"/>（只在 UI 线程跑）。</summary>
+    private void FlushPendingLogs()
+    {
+        Interlocked.Exchange(ref _logFlushScheduled, 0);
+
+        if (_disposed)
+        {
+            _logBuffer.Clear();
+            return;
+        }
+
+        int count = 0;
+        while (count++ < LogFlushBudget && _logBuffer.TryDequeue(out string? raw))
+            AppendLogLines(raw);
+
+        if (count > 1)
+            TrimLogs();
+
+        if (!_logBuffer.IsEmpty
+            && Interlocked.Exchange(ref _logFlushScheduled, 1) == 0
+            && !_dispatcherQueue.TryEnqueue(FlushPendingLogs))
+        {
+            Interlocked.Exchange(ref _logFlushScheduled, 0);
+        }
     }
 
     private void OnStateChanged(MCCConnectionState state)
@@ -1470,6 +1753,7 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
         _dispatcherQueue.TryEnqueue(() =>
         {
             IsConnected = state == MCCConnectionState.Connected;
+            CanEditConnection = state == MCCConnectionState.Disconnected;
             StateText = state switch
             {
                 MCCConnectionState.Connecting => "连接中…",
@@ -1488,6 +1772,10 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
             {
                 StopLatencyLoop();
                 LatencyText = "延迟 --";
+
+                // 断开后服务器命令列表作废（子进程可能已退出），别让旧服的命令建议串到下一次连接
+                if (state == MCCConnectionState.Disconnected)
+                    ServerCommands = Array.Empty<string>();
             }
         });
     }
@@ -1585,6 +1873,67 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
         });
     }
 
+    /// <summary>容器窗口内容更新：会话线程 / 子进程管道线程 → UI 线程。</summary>
+    private void OnWindowChanged(MccWindowInfo info)
+    {
+        _dispatcherQueue.TryEnqueue(() =>
+        {
+            _windowSnapshot = MergeWindow(_windowSnapshot, info);
+            OnPropertyChanged(nameof(WindowSnapshot));
+            WindowChanged?.Invoke(this, info);
+        });
+    }
+
+    /// <summary>服务器关掉了容器窗口：会话线程 / 子进程管道线程 → UI 线程。</summary>
+    private void OnWindowClosed(int windowId)
+    {
+        _dispatcherQueue.TryEnqueue(() =>
+        {
+            if (_windowSnapshot is { } snapshot && snapshot.Id == windowId)
+            {
+                _windowSnapshot = null;
+                OnPropertyChanged(nameof(WindowSnapshot));
+            }
+
+            WindowClosed?.Invoke(this, windowId);
+        });
+    }
+
+    /// <summary>
+    /// 把增量并进快照（切账号回来时界面用它重画整窗）。全量直接换掉，增量按格子号覆盖；
+    /// 结果一律标 <c>Full</c>，界面据此重铺网格。
+    /// </summary>
+    private static MccWindowInfo MergeWindow(MccWindowInfo? current, MccWindowInfo info)
+    {
+        if (info.Full || current is null || current.Id != info.Id)
+            return CloneAsFull(info, info.Slots);
+
+        Dictionary<int, MccWindowSlot> merged = [];
+        foreach (MccWindowSlot slot in current.Slots)
+            merged[slot.Index] = slot;
+        foreach (MccWindowSlot slot in info.Slots)
+            merged[slot.Index] = slot;
+
+        return CloneAsFull(info, [.. merged.Values]);
+    }
+
+    private static MccWindowInfo CloneAsFull(MccWindowInfo info, List<MccWindowSlot> slots)
+    {
+        return new MccWindowInfo
+        {
+            Id = info.Id,
+            Title = info.Title,
+            Type = info.Type,
+            Columns = info.Columns,
+            Rows = info.Rows,
+            Full = true,
+            Player = info.Player,
+            Groups = info.Groups,
+            ItemCount = info.ItemCount,
+            Slots = slots,
+        };
+    }
+
     private void OnProcessExited(int exitCode)
     {
         _dispatcherQueue.TryEnqueue(() =>
@@ -1593,92 +1942,35 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
                 : $"§c账号进程异常退出（退出码 {exitCode}），可点击“连接”重新拉起。"));
     }
 
+    /// <summary>服务器命令列表更新：会话线程 / 子进程管道线程 → UI 线程。</summary>
+    private void OnServerCommandsChanged(IReadOnlyList<string> commands)
+    {
+        _dispatcherQueue.TryEnqueue(() => ServerCommands = commands);
+    }
+
     /// <summary>主界面外壳往这个账号的日志里写一行系统提示（账号为空时静默丢弃）。</summary>
     public void WriteNote(string text) => AppendLog(text);
 
     /// <summary>
-    /// 日志行开头<b>连续的</b> <c>[标签]</c> 链（贪婪，取到第一个非 <c>[…]</c> 处为止）：
-    /// § 颜色码已被 GetVerbatim 剥掉，这里直接找方括号。
-    /// </summary>
-    private static readonly Regex FeatureTagChainRegex =
-        new(@"^(?:\s*\[([^\]]+)\])+", RegexOptions.Compiled | RegexOptions.CultureInvariant);
-
-    /// <summary>从行首的 <c>[标签]</c> 链里取出<b>所有</b>标签文本（如 “MCC”“AutoFishing”）。</summary>
-    private static readonly Regex FeatureTagPieceRegex =
-        new(@"\[\s*([^\]]+?)\s*\]", RegexOptions.Compiled | RegexOptions.CultureInvariant);
-
-    /// <summary>
-    /// “开关状态类”文案：功能日志被关掉时<b>仍然要推送</b>，否则用户关了之后看不出功能开没开。
+    /// 追加日志行。
     ///
-    /// 只认状态/结果类动词，不放行高频过程行——
-    /// 例如“§7[砍怪] 攻击僵尸（2.3 格）”不含这些词会被吞，而“§a[砍怪] 已开启：…” 一定留下。
+    /// 2026-10-20 起这里<b>不做任何功能日志过滤</b>：某功能的日志开关关掉时，
+    /// 子进程里对应 Bot 的 <c>ChatBot.ProcessLogEnabled</c> 已经是 false，
+    /// 过程日志根本不会经管道发过来（旧实现是"照发再按 <c>[标签]</c> 文本吞掉"，
+    /// MCC 汉化后标签从 <c>AutoFishing</c> 变成 <c>自动钓鱼</c>，开关就失效了）。
     /// </summary>
-    private static readonly Regex FeatureStateLogRegex = new(
-        "已开启|已关闭|已就绪|已停用|自动停用|已更新|已取消|不会产生|不生效|需要|停止",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant);
-
-    /// <summary>
-    /// 这行要不要因为“某功能的日志开关被关掉”而丢弃。
-    ///
-    /// 两条通路：
-    /// 1. <b>带 [标签] 的 Bot 日志</b>——沿行首连续的 <c>[标签]</c> 链逐个查
-    ///    <see cref="FeatureLogKeys.TagToKey"/> 认功能。必须扫整条链：
-    ///    MCC 内置 Bot 的行形如“[MCC] [AutoFishing] …”，MCCX 自己的形如
-    ///    “[MCC] [MouseControlBot] [鼠标] …”，行首第一个标签常常是 [MCC]/[MouseControlBot]
-    ///    这类<b>非功能</b>前缀，只认第一个标签会让过滤永远落空（2026-10-09 用户反馈）。
-    ///    任一标签在表里即命中；都不在表（[MCCX]、[公告]…）的一律放行，
-    ///    关砍怪日志不会顺手吃掉服务器公告。
-    /// 2. <b>自动重连的进度提示</b>——会话侧日志没有标签，只能按特征词认：
-    ///    “§e连接断开，3.0 秒后自动重连（第 1/无限次）…” 这类在链路抖动时会刷屏，
-    ///    但“自动重连已开启/已取消/已连续失败 N 次”是状态与结果，不在此列、始终保留。
-    /// </summary>
-    private bool IsMutedByFeatureLogSwitch(string text)
-    {
-        if (text.Length == 0)
-            return false;
-
-        if (TryGetFeatureKeyFromLeadingTags(text, out string? key) && key is not null)
-            return !GetLogSwitch(key) && !FeatureStateLogRegex.IsMatch(text);
-
-        return !GetLogSwitch(FeatureLogKeys.Reconnect)
-            && text.Contains("秒后自动重连", StringComparison.Ordinal);
-    }
-
-    /// <summary>
-    /// 取行首<b>连续</b> <c>[标签]</c> 链里第一个能在 <see cref="FeatureLogKeys.TagToKey"/> 命中的功能键。
-    /// 只看行首连续链（一旦遇到非 <c>[…]</c> 内容就停），避免误把正文里的方括号当标签。
-    /// </summary>
-    private static bool TryGetFeatureKeyFromLeadingTags(string text, out string? key)
-    {
-        key = null;
-
-        // 先确认行首确实起于一串 [标签]（链式匹配），再在该链覆盖的前缀内逐个取标签查表。
-        Match chain = FeatureTagChainRegex.Match(text);
-        if (!chain.Success || chain.Index != 0)
-            return false;
-
-        // chain.Value 就是行首那串连续的 [标签]（可能带前导空格已被 regex 吃掉）
-        foreach (Match piece in FeatureTagPieceRegex.Matches(chain.Value))
-        {
-            if (FeatureLogKeys.TagToKey.TryGetValue(piece.Groups[1].Value, out string? found))
-            {
-                key = found;
-                return true;
-            }
-        }
-
-        return false;
-    }
-
     private void AppendLog(string rawText)
+    {
+        AppendLogLines(rawText);
+        TrimLogs();
+    }
+
+    /// <summary>把一段原始文本按行搬进日志集合（不裁剪；批量搬运时由调用方最后统一裁一次）。</summary>
+    private void AppendLogLines(string rawText)
     {
         foreach (string line in rawText.Replace("\r\n", "\n").Split('\n'))
         {
             string text = ChatBot.GetVerbatim(line);
-
-            // 功能日志开关（2026-10-08 需求）：吞过程日志、留开关状态。
-            if (IsMutedByFeatureLogSwitch(text))
-                continue;
 
             // 连续重复合并（需求：多条相同日志不再刷屏）：
             // 与上一条完全相同的行不新增条目，直接把上一条就地更新成 “原文 xN”。
@@ -1692,7 +1984,11 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
 
             Logs.Add(new LogEntry(text, line));
         }
+    }
 
+    /// <summary>超过上限时按批裁掉头部（一次裁 <see cref="LogTrimBatch"/> 行，少发集合通知）。</summary>
+    private void TrimLogs()
+    {
         while (Logs.Count > MaxLogLines + LogTrimBatch)
             Logs.RemoveAt(0);
     }
@@ -1705,11 +2001,14 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
             return;
 
         _disposed = true;
+        _logBuffer.Clear(); // 已经派发的 UI 回调会在 FlushPendingLogs 里看到 _disposed 直接退出
         StopLatencyLoop(); // 2026-10-08：关掉延迟探测循环，别让它探着已断开的地址
         _session.LogReceived -= OnLogReceived;
         _session.StateChanged -= OnStateChanged;
         _session.DialogRequested -= OnDialogRequested;
         _session.DialogClosed -= OnDialogClosed;
+        _session.WindowChanged -= OnWindowChanged;
+        _session.WindowClosed -= OnWindowClosed;
 
         if (_session is RunnerProcess runner)
             runner.ProcessExited -= OnProcessExited;

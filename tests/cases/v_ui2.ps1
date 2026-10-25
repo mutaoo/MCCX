@@ -61,18 +61,27 @@ try {
     Grab "$out\v4_start.png"
 
     # ---- 1) 逐行叉号：弹窗必须对应点的那一行 ----
-    foreach ($name in @('Player', 'TestBob')) {
-        $item = Find-ListItemByText $list $name
-        if (-not $item) { Check $false "账号 $name 在列表里"; continue }
+    # 不写死账号名（本机账号库里不一定有 Player / TestBob，写死会让这条用例永远红）：
+    # 按列表顺序取前两"行"（跳过没有叉号的项 —— "按服务器分组"开着时组头也在列表里）。
+    # "这一行是哪个账号"不去猜行内文字的先后：选中它之后读右侧参数行的用户名（界面自己的值）。
+    $clicked = 0
+    foreach ($item in @(Get-ListItems $list)) {
+        if ($clicked -ge 2) { break }
 
-        Select-Item $item
-        Start-Sleep -Milliseconds 500
         $btn = $item.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
             (New-Object System.Windows.Automation.AndCondition(
                 (New-Object System.Windows.Automation.PropertyCondition($script:AE::ControlTypeProperty, $script:CT::Button)),
                 (New-Object System.Windows.Automation.PropertyCondition($script:AE::NameProperty, '删除账号')))))
+        if (-not $btn) { continue }   # 组头之类：没有叉号，不是账号行
+
+        Select-Item $item
+        Start-Sleep -Milliseconds 500
+        $name = $null
+        try { $name = Get-EditValue (Find-ById $script:AppRoot 'UserBox') } catch { $name = $null }
+        if (-not $name) { $name = "第 $($clicked + 1) 条账号" }   # 退化：至少能报出"第几行"
+        $clicked++
+
         Check ($null -ne $btn) "[$name] 行内能找到叉号"
-        if (-not $btn) { continue }
 
         # 悬停 → 叉号淡入（截图人工核对可见性）
         $r = $btn.Current.BoundingRectangle
@@ -96,6 +105,7 @@ try {
                 "before=$($items.Count) after=$(@(Get-ListItems $list).Count)"
         }
     }
+    Check ($clicked -gt 0) '列表里至少有一行能点叉号的账号（否则这条用例什么都没验到）'
 
     # 鼠标挪开，避免残留悬停状态
     [void][Vui2Cursor]::SetCursorPos(0, 0)

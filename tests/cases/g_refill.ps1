@@ -18,15 +18,6 @@ $script:TestPort = '25599'
 # RCON 的 execute as <玩家> 全部落空（与 p_filter / g_view / g_bow 同款处理）。
 $script:TestPlayer = $script:TestUser
 
-# ---------- 账号库操作（与 p_multi / p_filter / g_view / g_bow 一致） ----------
-function Get-AccountListEl {
-    $l = Find-ById $script:AppRoot 'AccountList'
-    if (-not $l) { throw '找不到账号列表 AccountList' }
-    return $l
-}
-
-function Get-AccountCount { return @(Get-ListItems (Get-AccountListEl)).Count }
-
 function Find-EditByIdSafe {
     param([string]$Id)
     try { return Find-ById $script:AppRoot $Id } catch { return $null }
@@ -103,14 +94,13 @@ function Test-LocalServerListening {
 }
 
 function Ensure-TestServer {
-    $dir = "$(Join-Path $PSScriptRoot '..\artifacts')\mcserver\1.21.11"
+    $dir = "$(Join-Path $PSScriptRoot '..\artifacts')\mcserver\26.1"
     if (-not (Test-Path (Join-Path $dir 'server.jar'))) { throw "本地测试服缺失: $dir" }
     if (Test-LocalServerListening) {
         Write-Host "  [srv] 本地测试服已在运行 127.0.0.1:$($script:TestPort)"
         return
     }
-    $java = (Get-Command java -ErrorAction SilentlyContinue).Source
-    if (-not $java) { throw 'java 不在 PATH，无法启动本地测试服' }
+    $java = Get-TestServerJava
     Start-Process -FilePath $java -ArgumentList '-Xmx1G', '-jar', 'server.jar', 'nogui' `
         -WorkingDirectory $dir -WindowStyle Hidden `
         -RedirectStandardOutput (Join-Path $dir 'test.out.log') `
@@ -208,13 +198,14 @@ try {
     $before = Get-AccountCount
 
     Add-TestAccount
-    Assert-True ((Get-AccountCount) -eq ($before + 1)) 'A1 测试账号已添加' "count=$(Get-AccountCount) before=$before"
+    $now = Wait-AccountCount -Expect ($before + 1) -TimeoutMs 10000
+    Assert-True ($now -eq ($before + 1)) 'A1 测试账号已添加' "count=$now before=$before"
 
     Select-TestAccount
 
     Clear-Log
     Invoke-UiButton '连接'
-    Assert-Log '连接成功' 'A2 本地测试服连接成功' 90000
+    Assert-Connected 'A2 本地测试服连接成功' 90000
     Assert-Log '已进入游戏' 'A3 进入游戏' 60000
     Start-Sleep -Seconds 2
 
@@ -299,7 +290,7 @@ try {
     Disconnect-App
     Clear-Log
     Invoke-UiButton '连接'
-    Assert-Log '连接成功' 'D1a 重连成功' 90000
+    Assert-Connected 'D1a 重连成功' 90000
     Assert-Log '已进入游戏' 'D1b 重连进入游戏' 60000
     Start-Sleep -Seconds 5 # 给 ApplyAutomation/认领留时间窗
     $recent = [string](Get-RecentLogText)
@@ -327,7 +318,7 @@ try {
     Set-ToggleOn '自动补充' $false # 断开状态下也可以切（只写会话配置/参数）
     Clear-Log
     Invoke-UiButton '连接'
-    Assert-Log '连接成功' 'D2a 关闭后再重连成功' 90000
+    Assert-Connected 'D2a 关闭后再重连成功' 90000
     Assert-Log '已进入游戏' 'D2b 关闭后再重连进入游戏' 60000
     Start-Sleep -Seconds 5
     Assert-True (-not (Get-ToggleOn '自动补充')) 'D2c 重连后开关仍是关的' "on=$(Get-ToggleOn '自动补充')"
@@ -365,6 +356,10 @@ try {
         Write-Host ("  [clean] 删除测试账号失败: " + $_.Exception.Message)
     }
     $after = Get-AccountCount
+    if ($after -ne $before) {
+        # 删项后 ListView 重建期间 UIA 可能短暂少读一个 ListItem，等 UI 结算后重读一次
+        $after = Wait-AccountCount -Expect $before -TimeoutMs 10000
+    }
     Assert-True ($after -eq $before) 'X1 账号数已恢复（未污染用户账号库）' "after=$after before=$before"
 }
 

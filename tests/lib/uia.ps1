@@ -17,6 +17,10 @@ public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint process
 public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
 [DllImport("kernel32.dll")]
 public static extern uint GetCurrentThreadId();
+[DllImport("user32.dll", CharSet = CharSet.Unicode)]
+public static extern IntPtr LoadKeyboardLayout(string pwszKLID, uint Flags);
+[DllImport("user32.dll")]
+public static extern IntPtr PostMessage(IntPtr hWnd, int Msg, IntPtr wParam, IntPtr lParam);
 '@
 }
 
@@ -34,6 +38,11 @@ function Set-Foreground {
     if ($script:Hwnd -ne [IntPtr]::Zero) {
         [void][MccXUi.Win32]::ShowWindow($script:Hwnd, 9)   # SW_RESTORE
         [void][MccXUi.Win32]::SetForegroundWindow($script:Hwnd)
+        Start-Sleep -Milliseconds 200
+        # 2026-10-16：窗口真被激活后再切一次输入语言。启动时发的 WM_INPUTLANGCHANGEREQUEST
+        # 在窗口还没激活时会被丢掉，重新激活时又按进程记住的中文 IME 生效 —— SendKeys 的
+        # Tab/Esc/↑ 就全被 IME 吃掉（实测：Tab 填不进候选、Esc 只取消了组合串）。
+        Set-EnglishInputLayout
         Start-Sleep -Milliseconds 200
     }
 }
@@ -75,6 +84,18 @@ function Wait-AppWindow {
         try { return (Get-AppWindow $ProcName) } catch { Start-Sleep -Milliseconds 300 }
     }
     throw "等待 $ProcName 窗口超时"
+}
+
+function Set-EnglishInputLayout {
+    # SendKeys 打字前必须把 MCCX 的输入法切成英文：中文 IME 下 "/he" 会进组合串，
+    # 空格把组合串上屏成汉字、Esc 把组合串取消——输入框里的字凭空少一截
+    # （2026-10-15 查 g_search 的 "Esc 关掉浮层" 用例时定位：Win 会按进程记住输入语言，
+    #  MCCX 上次是中文输入时，本次启动打字就全进 IME）。
+    # 给主窗口发 WM_INPUTLANGCHANGEREQUEST(0x0050)，把输入语言切到 en-US(00000409)。
+    if ($script:Hwnd -eq [IntPtr]::Zero) { return }
+    $hkl = [MccXUi.Win32]::LoadKeyboardLayout('00000409', 1)   # KLF_ACTIVATE
+    if ($hkl -eq [IntPtr]::Zero) { return }
+    [void][MccXUi.Win32]::PostMessage($script:Hwnd, 0x0050, [IntPtr]::Zero, $hkl)
 }
 
 function Find-ById {

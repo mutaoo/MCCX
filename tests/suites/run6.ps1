@@ -2,7 +2,7 @@ $ErrorActionPreference = 'Continue'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 foreach ($s in @('p_ui', 'p_layout', 'p_blank', 'p_bind', 'p_multi', 'p_port', 'p_look', 'p_filter', 'v_ui2')) {
     Write-Output "=== RUN $s ==="
-    try { & '$PSScriptRoot\run_p.ps1' -Name $s }
+    try { & "$PSScriptRoot\run_p.ps1" -Name $s }
     catch { Write-Output "EXCEPTION ${s}: $($_.Exception.Message)" }
     $log = "$(Join-Path $PSScriptRoot '..\artifacts')\${s}_out.txt"
     if (Test-Path $log) {

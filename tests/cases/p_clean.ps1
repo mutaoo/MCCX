@@ -2,14 +2,6 @@
 $ErrorActionPreference = 'Stop'
 . "$(Join-Path $PSScriptRoot '..\lib')\autolib.ps1"
 
-function Get-AccountListEl {
-    $l = Find-ById $script:AppRoot 'AccountList'
-    if (-not $l) { throw '找不到账号列表 AccountList' }
-    return $l
-}
-
-function Get-AccountCount { return @(Get-ListItems (Get-AccountListEl)).Count }
-
 $null = Start-App
 Save-Foreground
 Write-Host "清理前账号数 = $(Get-AccountCount)"

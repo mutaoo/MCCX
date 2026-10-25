@@ -8,6 +8,7 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     xmlns:viewmodels="using:MCCX_App.ViewModels"
     mc:Ignorable="d"
+    CornerRadius="12"
     Title="生物过滤"
     CloseButtonText="关闭"
     DefaultButton="Close">

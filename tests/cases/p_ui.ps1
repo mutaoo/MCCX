@@ -30,6 +30,30 @@ if ($hit) { $line = (@($hit -split "`n") | Where-Object { $_ -match '用户数�
 Assert-True ($hit -and ($line -match '用户数据目录：')) '日志显示用户数据目录' $line
 Write-Host "  -> $line"
 
+# 1b) 2026-10-16 需求（第三轮）：没连上服务器时，命令栏（常用命令 / 输入框 / 发送 / 清空日志）
+#     和日志搜索框整块收起，要连上服务器才显示（连上之后的样子在 g_search 里验）。
+#     这几条正好跑在"刚起来、未连接"的状态下，所以放在这里最省事。
+$stateOff = ''
+try { $stateOff = Get-WindowStateText $script:AppRoot } catch { }
+Assert-True ($stateOff -eq '未连接') '起步就是未连接' "实际='$stateOff'"
+foreach ($id in @('CommandBox', 'LogSearchBox', 'FrequentCommandsButton')) {
+    $el = $null
+    try { $el = Find-ById $script:AppRoot $id } catch { $el = $null }
+    Assert-True ($null -eq $el) "未连接时 $id 已收起"
+}
+foreach ($name in @('发送', '清空日志', '常用命令')) {
+    $btn = $null
+    try { $btn = Get-UiButton $name } catch { $btn = $null }
+    Assert-True ($null -eq $btn) "未连接时「$name」按钮已收起"
+}
+# 对照：和"连不连都得在"的控件分开验，免得整块界面塌了也被当成"收起来了"
+foreach ($name in @('连接', '断开', '添加账号')) {
+    $btn = $null
+    try { $btn = Get-UiButton $name } catch { $btn = $null }
+    Assert-True ($null -ne $btn) "未连接时「$name」按钮仍在"
+}
+Assert-True ($null -ne (Find-ById $script:AppRoot 'LogScrollHost')) '未连接时日志区仍在'
+
 # 2) 功能开关仍在同一行且可读状态
 # （自动补充 2026-10-03、自动行走 2026-10-04 追加在行尾，同为"文字 + 开关"）
 foreach ($n in @('自动砍怪', '鼠标控制', '自动钓鱼', '自动重连', '自动补充', '自动行走')) {

@@ -323,7 +323,16 @@ namespace MinecraftClient.Protocol.Handlers
                     if (packetQueue.TryTake(out var packetInfo, 1))
                     {
                         var (packetId, packetData) = packetInfo;
-                        HandlePacket(packetId, packetData);
+                        try
+                        {
+                            HandlePacket(packetId, packetData);
+                        }
+                        catch (System.IO.InvalidDataException ex)
+                        {
+                            // A single malformed packet (e.g. an undecodable item component)
+                            // must not kill the reader thread and the whole process: log it and skip the packet.
+                            log.Error($"§c{string.Format(Translations.exception_packet_decode_skipped, packetPalette.GetIncomingTypeById(packetId), ex.InnerException?.GetType().Name ?? ex.GetType().Name)}");
+                        }
                         continue;
                     }
 
@@ -351,6 +360,14 @@ namespace MinecraftClient.Protocol.Handlers
             catch (System.IO.IOException)
             {
                 exitReason = nameof(System.IO.IOException);
+            }
+            catch (Exception ex)
+            {
+                // Safety net: never let an unexpected exception escape and kill the process.
+                exitReason = ex.GetType().Name;
+                string innerName = ex.InnerException?.GetType().Name ?? "null";
+                log.Error("§c" + string.Format(Translations.exception_packet_process,
+                    ex.GetType().Name, -1, protocolVersion, currentState == CurrentState.Login, innerName));
             }
 
             if (cancelToken.IsCancellationRequested)
@@ -405,6 +422,13 @@ namespace MinecraftClient.Protocol.Handlers
                 catch (System.IO.InvalidDataException)
                 {
                     exitReason = nameof(System.IO.InvalidDataException);
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    // Safety net: an unexpected reader error must not escape and kill the process.
+                    exitReason = ex.GetType().Name;
+                    ConsoleIO.WriteLogLine($"§c{string.Format(Translations.exception_packet_process, ex.GetType().Name, -1, protocolVersion, currentState == CurrentState.Login, ex.InnerException?.GetType().Name ?? "null")}");
                     break;
                 }
 

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentDialog
+    x:Class="MCCX_App.PrefixEditorDialog"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d"
+    CornerRadius="12"
+    Title="展开编辑前缀"
+    PrimaryButtonText="保存"
+    CloseButtonText="取消"
+    DefaultButton="Primary">
+
+    <!--
+        服务器信息过滤的前缀列表：多行编辑窗（2026-10-21 需求）。
+        参数弹层里那行输入框太窄，前缀一多就看不全，点右端的小展开图标来这里写。
+        保存时换行会合并成逗号（见代码里的 NormalizeLines），解析仍走 ServerFilterLogger.ParsePrefixes。
+    -->
+    <StackPanel Spacing="10" Width="440">
+        <TextBlock Text="前缀可以写多个：一行一个，或逗号、顿号、竖线分隔都行；保存时合并成一行；留空等于不过滤。"
+                   FontSize="12"
+                   Opacity="0.7"
+                   TextWrapping="Wrap" />
+        <TextBox x:Name="Editor"
+                 AutomationProperties.Name="前缀编辑框"
+                 AcceptsReturn="True"
+                 TextWrapping="Wrap"
+                 MinHeight="220"
+                 MaxHeight="320"
+                 IsSpellCheckEnabled="False"
+                 IsTextPredictionEnabled="False"
+                 ScrollViewer.VerticalScrollBarVisibility="Auto"
+                 PlaceholderText="如：&#x0a;[公告]&#x0a;[活动]" />
+    </StackPanel>
+</ContentDialog>

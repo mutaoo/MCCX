@@ -16,14 +16,6 @@ function Find-EditByIdSafe {
     return $e
 }
 
-function Get-AccountListEl {
-    $l = Find-ById $script:AppRoot 'AccountList'
-    if (-not $l) { throw '找不到账号列表 AccountList' }
-    return $l
-}
-
-function Get-AccountCount { return @(Get-ListItems (Get-AccountListEl)).Count }
-
 function Hide-AccountFiles {
     if (Test-Path $stash) { Remove-Item $stash -Recurse -Force }
     New-Item -ItemType Directory -Path $stash | Out-Null
@@ -113,7 +105,8 @@ try {
         if (Find-EditByIdSafe 'NewServerBox') { $null } else { 'closed' }
     }
 
-    Assert-True ((Get-AccountCount) -eq 1) 'H5 添加后列表里有 1 个账号' "count=$(Get-AccountCount)"
+    $now = Wait-AccountCount -Expect 1 -TimeoutMs 10000
+    Assert-True ($now -eq 1) 'H5 添加后列表里有 1 个账号' "count=$now"
     $srv = Wait-For -TimeoutMs 8000 -What '右侧面板出现' -Probe {
         $e = Find-EditByIdSafe 'ServerBox'; if ($e) { (Get-EditValue $e) } else { $null }
     }

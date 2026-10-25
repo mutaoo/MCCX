@@ -47,6 +47,12 @@ public static class MCCRuntime
             Settings.Config.Main.Advanced.InventoryHandling = true;
             Settings.Config.Main.Advanced.EntityHandling = true;
 
+            // 日志/聊天里的物品名、死亡提示这类"Minecraft 可翻译文本"由 MCC 自己翻：
+            // ChatParser 在连接时按 Config.Main.Advanced.Language 载入官方语言表（第一次联网下、
+            // 之后缓存在 exe 旁的 lang\zh_cn.json）。这里钉成官方简体中文，和系统的游戏语言无关；
+            // MCCX 不再对日志文本另做一层英文到中文的映射（2026-10-19 用户要求）。
+            Settings.Config.Main.Advanced.Language = "zh_cn";
+
             // 死亡后自动重生（MCC 默认关闭，关掉就会卡在死亡界面等玩家手动按重生）。
             // 打开后 MCC 在收到血量 <= 0 时等 1 秒自己发重生包。
             Settings.Config.Main.Advanced.AutoRespawn = true;

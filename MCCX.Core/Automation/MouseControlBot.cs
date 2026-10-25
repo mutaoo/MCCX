@@ -447,7 +447,7 @@ internal sealed class MouseControlBot : ChatBot
             return;
 
         _left.LastBreakTrace = now;
-        LogToConsole($"§7[鼠标] 破坏方块 {block.Type}（{location.X:0}, {location.Y:0}, {location.Z:0}）");
+        LogProcess($"§7[鼠标] 破坏方块 {block.Type}（{location.X:0}, {location.Y:0}, {location.Z:0}）");
     }
 
     /// <summary>执行一次“按下”。</summary>
@@ -633,7 +633,7 @@ internal sealed class MouseControlBot : ChatBot
             return;
 
         st.LastTrace = now;
-        LogToConsole($"§7[鼠标] {message}");
+        LogProcess($"§7[鼠标] {message}");
     }
 
     private static string SideName(MouseSide side)

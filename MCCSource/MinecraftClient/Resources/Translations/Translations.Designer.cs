@@ -5540,6 +5540,15 @@ namespace MinecraftClient {
         }
         
         /// <summary>
+        ///   Looks up a localized string similar to Skipped malformed incoming packet of type {0} ({1}). The connection is kept alive..
+        /// </summary>
+        internal static string exception_packet_decode_skipped {
+            get {
+                return ResourceManager.GetString("exception.packet_decode_skipped", resourceCulture);
+            }
+        }
+        
+        /// <summary>
         ///   Looks up a localized string similar to Failed to process incoming packet of type {0}. (PacketID: {1}, Protocol: {2}, LoginPhase: {3}, InnerException: {4})..
         /// </summary>
         internal static string exception_packet_process {

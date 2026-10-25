@@ -249,7 +249,7 @@ public sealed class AutoWalkBot : ChatBot
                 || GetWorld().GetBlock(here + new Location(0, 1, 0)).Type.IsSolid();
             string body = inBody ? "实心" : "空";
             bool ground = Movement.IsOnGround(GetWorld(), here);
-            LogToConsole($"§e[自动行走] 长时间未能前进，重新规划路线。（这段位移 {moved} 格，身位={body}，onGround={ground}）");
+            LogProcess($"§e[自动行走] 长时间未能前进，重新规划路线。（这段位移 {moved} 格，身位={body}，onGround={ground}）");
             _stallTicks = 0;
         }
         else
@@ -383,6 +383,6 @@ public sealed class AutoWalkBot : ChatBot
             return;
 
         flag = true;
-        LogToConsole($"§e[自动行走] {detail}");
+        LogProcess($"§e[自动行走] {detail}");
     }
 }

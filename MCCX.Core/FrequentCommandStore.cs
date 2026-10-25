@@ -34,7 +34,7 @@ public sealed class FrequentCommand
         if (trimmed.Length == 0 || trimmed[0] != '/')
             return false;
 
-        // "//xxx" 是把 "/xxx" 原样发到聊天，不是内部命令
+        // "//" 开头不算内部命令（2026-10-16 起已经不能靠它给服务器发 /xxx，但依然不该进常用命令库）
         if (trimmed.StartsWith("//", StringComparison.Ordinal))
             return false;
 

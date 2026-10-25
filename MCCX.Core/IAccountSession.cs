@@ -1,3 +1,4 @@
+using MCCX.Core.Containers;
 using MCCX.Core.Dialogs;
 
 namespace MCCX.Core;
@@ -32,6 +33,35 @@ public interface IAccountSession : IDisposable
 
     /// <summary>服务器关闭了编号为该值的对话框。可能从任意线程触发。</summary>
     event Action<int>? DialogClosed;
+
+    /// <summary>
+    /// 服务器命令列表（declare_commands / tab-complete 合并结果）更新。
+    /// 载荷是根命令名列表（不含前导 '/'），供输入框做命令建议。可能从任意线程触发。
+    /// </summary>
+    event Action<IReadOnlyList<string>>? ServerCommandsChanged;
+
+    /// <summary>
+    /// 服务器打开/刷新了一个容器窗口（箱子、商店 GUI 等）。载荷里 <c>Full</c> 为 true 时是
+    /// 全量快照，否则只有变化的格子。可能从任意线程触发。
+    /// </summary>
+    event Action<MccWindowInfo>? WindowChanged;
+
+    /// <summary>服务器关掉了编号为该值的容器窗口。可能从任意线程触发。</summary>
+    event Action<int>? WindowClosed;
+
+    /// <summary>
+    /// 点容器窗口里的一个格子（或关掉窗口，<see cref="MccWindowAction.Close"/>）。
+    /// 与对话框一样不走聊天/命令通道：这是协议层的窗口点击，不会进日志也不会被当成聊天发出去。
+    /// 返回是否已投递。
+    /// </summary>
+    bool WindowClick(MccWindowClick click);
+
+    /// <summary>
+    /// 开 / 收"玩家背包"面板：打开后会话把玩家背包（MCC 的窗口 0：装备 + 背包 + 快捷栏）
+    /// 当普通窗口内容推过来（<see cref="WindowChanged"/>，<c>Player</c> 为 true），
+    /// 收起后停止推送。重连后由会话自己接着推，界面不用重发。返回是否已投递。
+    /// </summary>
+    bool WatchPlayerInventory(bool watch);
 
     /// <summary>
     /// 把界面填好的对话框取值写回并点击指定动作（编号从 1 开始）。
@@ -69,6 +99,12 @@ public interface IAccountSession : IDisposable
     void ConfigureWalk(bool enabled);
 
     /// <summary>
+    /// 自动指令（2026-10-22 需求）：总开关 + 整份指令表。每条指令各自带间隔（秒）与
+    /// "进服立即执行"；已连接时改表立即生效，不用重连。
+    /// </summary>
+    void ConfigureAutoCommands(bool enabled, IReadOnlyList<AutoCommandDefinition> commands);
+
+    /// <summary>
     /// 服务器信息过滤（2026-10-04 需求）：全屏蔽 / 只屏蔽玩家消息 / 只开放特定前缀。
     /// 只影响服务器消息进不进日志，不影响 Bot 收到的内容。
     /// <paramref name="showPrefix"/> 是"只显示指定前缀"用的，<paramref name="blockPrefix"/> 是
@@ -78,6 +114,13 @@ public interface IAccountSession : IDisposable
     void ConfigureServerFilter(ServerFilterMode mode, string showPrefix, string blockPrefix);
 
     void ConfigureReconnect(ReconnectOptions options);
+
+    /// <summary>
+    /// 某功能的“过程日志”开关（2026-10-20 用户要求：开关控制日志的<b>发出</b>）：
+    /// 下发到会话后，对应 Bot 的 <c>ProcessLogEnabled</c> 立即跟着变——关掉后该功能的过程日志
+    /// 根本不产生，而不是先发到界面再按文本过滤。状态提示（已开启/已就绪…）不受影响。
+    /// </summary>
+    void SetFeatureLog(string key, bool enabled);
 
     /// <summary>视角移动（需求 4）：把视角立刻转向指定方向，一次性生效。没进服时写一行提示。</summary>
     void LookAt(MccLookDirection direction);

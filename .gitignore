@@ -4,6 +4,8 @@ obj/
 .vs/
 *.user
 *.suo
+# 便携版发布产物（dotnet publish -o publish，约 166 MB）
+publish/
 
 # 运行期日志
 logs/

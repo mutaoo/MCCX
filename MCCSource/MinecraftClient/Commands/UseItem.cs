@@ -73,26 +73,34 @@ namespace MinecraftClient.Commands
                 return r.SetAndReturn(Status.FailNeedInventory);
 
             Hand hand = requestedHand ?? (ShouldUseOffhandFood(handler) ? Hand.OffHand : Hand.MainHand);
-            bool useOffhandFood = !requestedHand.HasValue && hand == Hand.OffHand;
 
-            if (!useOffhandFood && handler.GetTerrainEnabled())
-            {
-                const double maxDistance = 4.5;
-                var raycast = RaycastHelper.RaycastBlock(handler, maxDistance, false);
-                if (raycast.Item1 && raycast.Item3.Type != Material.Air)
-                {
-                    handler.PlaceBlock(raycast.Item2, Direction.Up, hand, lookAtBlock: true);
-                    handler.DoAnimation((int)hand);
-                    return r.SetAndReturn(Status.Done, Translations.cmd_useitem_use);
-                }
-            }
+            // 2026-10-24（MCCX）：去掉"先射线找方块 → PlaceBlock"这一步。
+            // 那个分支会把手上的任何东西都当方块放：药水 / 末影珍珠 / 食物这类服务端不收，
+            // 日志却照样回"使用了一个物品"，而且有没有反应取决于当时视线里有没有方块 ——
+            // 用户反馈"同样的 /useitem，有的账号窗口能用、有的不能"。
+            // UseItemOnHand 就是原版右键（PlayerInteractItem）：放方块还是用物品由服务端按视线判断。
+            // 想明确对着某块方块用，走 /useblock <x> <y> <z>。
+            if (IsHandEmpty(handler, hand))
+                return r.SetAndReturn("手上没有物品：/useitem 用的是当前选中格里的物品（副手请用 /useitem offhand）。", false);
 
             if (hand == Hand.OffHand)
                 handler.UseItemOnLeftHand();
             else
                 handler.UseItemOnHand();
 
+            handler.DoAnimation((int)hand);
             return r.SetAndReturn(Status.Done, Translations.cmd_useitem_use);
+        }
+
+        /// <summary>当前这只手是不是空的（背包还没同步时不做判断，免得误报）。</summary>
+        private static bool IsHandEmpty(McClient handler, Hand hand)
+        {
+            Container? inventory = handler.GetInventory(0);
+            if (inventory is null)
+                return false;
+
+            int slot = hand == Hand.OffHand ? 45 : 36 + handler.GetCurrentSlot();
+            return !inventory.Items.TryGetValue(slot, out Item? item) || item.IsEmpty;
         }
 
         private int DoUseItemAtLocation(CmdResult r, Location block, Hand hand)

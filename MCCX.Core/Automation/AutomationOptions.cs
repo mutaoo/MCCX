@@ -147,6 +147,38 @@ public sealed record FishingOptions
     public double CastDelaySeconds { get; init; } = 0.4;
 }
 
+/// <summary>
+/// 自动指令里的一条（2026-10-22 用户需求）：定时把一段文本（通常是 <c>/spawn</c> 这类指令）
+/// 发进聊天框。每条指令的间隔与"进服立即执行"<b>各自独立</b>。
+/// <para>
+/// 用可变类而不是 record：它要经父子进程的 JSON 往返（<c>RunnerMessage.AutoCommands</c>），
+/// 也要能直接落进账号库（<c>AccountProfile.AutoCommands</c>），可变属性最省事。
+/// </para>
+/// </summary>
+public sealed class AutoCommandDefinition
+{
+    /// <summary>指令/文本原文（按界面输入框原样发；以 / 开头时先试 MCC 内部命令，不是内部命令才当服务器指令）。</summary>
+    public string Text { get; set; } = string.Empty;
+
+    /// <summary>间隔（秒）：上一次执行后再等这么久执行下一次。1 秒 ~ 24 小时。</summary>
+    public double IntervalSeconds { get; set; } = 60.0;
+
+    /// <summary>进服（真正进入游戏）后立刻执行一次这条指令，之后照常按间隔循环。</summary>
+    public bool RunOnJoin { get; set; }
+
+    /// <summary>执行方式（2026-10-22 第二轮）：true = 循环执行，false = 只执行一次。</summary>
+    public bool Loop { get; set; } = true;
+
+    /// <summary>
+    /// 循环执行的总次数：<c>0</c> = 无限（界面默认，空框也是它）；只在 <see cref="Loop"/> 为真时有意义。
+    /// 每次进服从 0 开始重新计数（进服立即执行算一次）。
+    /// </summary>
+    public int RepeatCount { get; set; }
+
+    /// <summary>这条自己的过程日志开关（每条独立，默认开）。</summary>
+    public bool LogEnabled { get; set; } = true;
+}
+
 /// <summary>时间抖动工具：把固定毫秒数变成 ±percent% 的随机值。</summary>
 internal static class AutomationJitter
 {

@@ -250,6 +250,12 @@ namespace MinecraftClient
         private static string[] CommandsFromAutoComplete = Array.Empty<string>();
         private static string[] CommandsFromDeclareCommands = Array.Empty<string>();
 
+        /// <summary>
+        /// MCCX: raised whenever the merged server command list (declare_commands / tab-complete) changes.
+        /// Payload is the list of root command names without the leading '/'.
+        /// </summary>
+        internal static event Action<IReadOnlyList<string>>? ServerCommandsUpdated;
+
         private static Task _latestTask = Task.CompletedTask;
         private static CancellationTokenSource? _cancellationTokenSource;
 
@@ -448,6 +454,12 @@ namespace MinecraftClient
                 Commands.Add('/' + cmd);
             foreach (string cmd in CommandsFromDeclareCommands)
                 Commands.Add('/' + cmd);
+
+            // MCCX: notify listeners (MCCX session) about the updated server command list.
+            var updated = new List<string>(Commands.Count);
+            foreach (string cmd in Commands)
+                updated.Add(cmd.StartsWith('/') ? cmd[1..] : cmd);
+            ServerCommandsUpdated?.Invoke(updated);
         }
 
         public static void OnAutoCompleteDone(int transactionId, string[] result)

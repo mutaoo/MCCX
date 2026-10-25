@@ -5,13 +5,6 @@ $ErrorActionPreference = 'Continue'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 . "$(Join-Path $PSScriptRoot '..\lib')\autolib.ps1"
 
-# 账号列表元素（同 p_multi / p_blank 等用例的写法：autolib 里没有这个 helper）
-function Get-AccountListEl {
-    $l = Find-ById $script:AppRoot 'AccountList'
-    if (-not $l) { throw '找不到账号列表 AccountList' }
-    return $l
-}
-
 $script:GuiFail = 0
 function Check([bool]$ok, [string]$name, [string]$detail = '') {
     if ($ok) { Write-Host "PASS  $name" }

@@ -10,15 +10,6 @@ $script:FilterModes = @('不过滤（仅敌对）', '白名单（只打勾选的
 # 不改的话血量/创造/场地传送这类 execute as <玩家> 的 RCON 全部落空。
 $script:TestPlayer = $script:TestUser
 
-# ---------- 账号库操作（与 p_multi 一致） ----------
-function Get-AccountListEl {
-    $l = Find-ById $script:AppRoot 'AccountList'
-    if (-not $l) { throw '找不到账号列表 AccountList' }
-    return $l
-}
-
-function Get-AccountCount { return @(Get-ListItems (Get-AccountListEl)).Count }
-
 function Find-EditByIdSafe {
     param([string]$Id)
     try { return Find-ById $script:AppRoot $Id } catch { return $null }
@@ -103,7 +94,7 @@ function Test-LocalServerListening {
 }
 
 function Ensure-TestServer {
-    $dir = "$(Join-Path $PSScriptRoot '..\artifacts')\mcserver\1.21.11"
+    $dir = "$(Join-Path $PSScriptRoot '..\artifacts')\mcserver\26.1"
     if (-not (Test-Path (Join-Path $dir 'server.jar'))) { throw "本地测试服缺失: $dir" }
     $props = Join-Path $dir 'server.properties'
     if (Test-Path $props) {
@@ -113,8 +104,7 @@ function Ensure-TestServer {
         Write-Host "  [srv] 本地测试服已在运行 127.0.0.1:$($script:TestPort)"
         return
     }
-    $java = (Get-Command java -ErrorAction SilentlyContinue).Source
-    if (-not $java) { throw 'java 不在 PATH，无法启动本地测试服' }
+    $java = Get-TestServerJava
     Start-Process -FilePath $java -ArgumentList '-Xmx1G', '-jar', 'server.jar', 'nogui' `
         -WorkingDirectory $dir -WindowStyle Hidden `
         -RedirectStandardOutput (Join-Path $dir 'test.out.log') `
@@ -370,7 +360,8 @@ try {
     $before = Get-AccountCount
     Add-TestAccount
     $created = $true
-    Assert-True ((Get-AccountCount) -eq ($before + 1)) 'A1 测试账号已添加' "count=$(Get-AccountCount) before=$before"
+    $now = Wait-AccountCount -Expect ($before + 1) -TimeoutMs 10000
+    Assert-True ($now -eq ($before + 1)) 'A1 测试账号已添加' "count=$now before=$before"
     Select-TestAccount
     Assert-True ((Get-EditValueSafe 'UserBox') -eq $script:TestUser) 'A2 选中测试账号面板'
 
@@ -438,7 +429,7 @@ try {
     Clear-Log
     Invoke-UiButton '连接'
     Assert-Log '账号子进程已就绪' 'E1 子进程启动' 20000
-    Assert-Log '连接成功' 'E2 连接本地测试服成功' 60000
+    Assert-Connected 'E2 连接本地测试服成功' 60000
     Assert-Log '已进入游戏' 'E3 进入世界' 60000
 
     Setup-TestWorld
@@ -571,7 +562,10 @@ finally {
                 $null = Wait-For -TimeoutMs 10000 -What '测试账号删除' -Probe {
                     if (-not (Find-ListItemByText (Get-AccountListEl) $script:TestUser)) { 'gone' } else { $null }
                 }
-                Assert-True ((Get-AccountCount) -eq $before) 'X1 测试账号已删除、账号数复原' "count=$(Get-AccountCount) before=$before"
+                # 点数走公共库的 Wait-AccountCount：删项后 ListView 重建期间 UIA 可能短暂读到旧项数，
+                # 等 UI 结算；真被污染（少/多一个账号）会一直对不上，超时返回当前值、断言照样失败。
+                $nowCount = Wait-AccountCount -Expect $before -TimeoutMs 10000
+                Assert-True ($nowCount -eq $before) 'X1 测试账号已删除、账号数复原' "count=$nowCount before=$before"
                 Assert-True ($null -eq (Find-ListItemByText (Get-AccountListEl) $script:TestUser)) 'X2 账号库无测试残留'
             } else {
                 Assert-True $false 'X1 未能通过叉号+确认弹窗删除测试账号（账号库可能残留 TestFilter）'

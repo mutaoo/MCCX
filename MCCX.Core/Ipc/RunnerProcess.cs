@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO.Pipes;
 using System.Text;
+using MCCX.Core.Containers;
 using MCCX.Core.Dialogs;
 
 namespace MCCX.Core.Ipc;
@@ -24,10 +25,30 @@ public sealed class RunnerProcess : IAccountSession
     /// <summary>退出时给子进程的收尾时间，超时直接 Kill。</summary>
     private const int ExitWaitMs = 3000;
 
+    /// <summary>
+    /// 点了断开后等子进程确认的时间。超时直接结束子进程（套接字由系统关闭），
+    /// 宁可多花一次重连，也不能让服务器那边一直挂着"在线"（2026-10-23 用户报的现象）。
+    /// </summary>
+    private const int DisconnectForceKillMs = 5000;
+
+    /// <summary>命令队列上限：子进程卡住时最多堆这么多条，再往里塞就丢弃并报错（绝不阻塞界面线程）。</summary>
+    private const int WriteQueueCapacity = 4096;
+
     private readonly string _exePath;
     private readonly string _accountId;
     private readonly object _gate = new();
-    private readonly object _writeGate = new();
+
+    /// <summary>待写进命令管道的消息（JSON 行）。所有写入都由 <see cref="_writerThread"/> 单线程完成。</summary>
+    private readonly System.Collections.Concurrent.BlockingCollection<string> _writeQueue =
+        new(new System.Collections.Concurrent.ConcurrentQueue<string>(), WriteQueueCapacity);
+
+    /// <summary>
+    /// 断开看门狗代号：每次"真的发过断开 / 连上 / 确认断开"都会 +1，
+    /// 看门狗醒来时代号变了就说明状态已经推进过，不再杀进程。
+    /// </summary>
+    private int _disconnectEpoch;
+
+    private Thread? _writerThread;
 
     /// <summary>进程还没起来时收到的配置命令（按类型去重），拉起进程后立刻补发。</summary>
     private readonly Dictionary<string, RunnerMessage> _config = new(StringComparer.Ordinal);
@@ -64,8 +85,36 @@ public sealed class RunnerProcess : IAccountSession
     /// <summary>服务器关闭了编号为该值的对话框。</summary>
     public event Action<int>? DialogClosed;
 
+    /// <summary>服务器命令列表更新（子进程推过来的 JSON 字符组）。可能从事件管道线程触发。</summary>
+    public event Action<IReadOnlyList<string>>? ServerCommandsChanged;
+
+    /// <summary>服务器打开/刷新了容器窗口（子进程推过来的）。可能从事件管道线程触发。</summary>
+    public event Action<MccWindowInfo>? WindowChanged;
+
+    /// <summary>服务器关掉了编号为该值的容器窗口。</summary>
+    public event Action<int>? WindowClosed;
+
     /// <summary>子进程退出（含崩溃）。参数是进程退出码，取不到时为 -1。</summary>
     public event Action<int>? ProcessExited;
+
+    /// <summary>解析子进程推来的命令列表 JSON（字符串数组）；坏数据返回 null，不影响会话。</summary>
+    private static IReadOnlyList<string>? ParseCommandList(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+            return null;
+
+        try
+        {
+            return System.Text.Json.JsonSerializer.Deserialize<string[]>(json, RunnerMessage.SharedJsonOptions)
+                is { } names
+                ? names
+                : null;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return null;
+        }
+    }
 
     public MCCConnectionState State
     {
@@ -152,6 +201,10 @@ public sealed class RunnerProcess : IAccountSession
             psi.ArgumentList.Add(_accountId);
         }
 
+        // 父进程 PID 透传给子进程：子进程自己盯着父进程，父进程一没就退出（作业对象之外的第二层保险）
+        psi.ArgumentList.Add("--parent");
+        psi.ArgumentList.Add(Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
         Process process;
         try
         {
@@ -167,6 +220,10 @@ public sealed class RunnerProcess : IAccountSession
         // 句柄已经通过参数交给子进程，父进程这边的副本要立刻关掉
         cmdPipe.DisposeLocalCopyOfClientHandle();
         evtPipe.DisposeLocalCopyOfClientHandle();
+
+        // 兜底：主程序以任何方式结束（含强杀）时，系统把这些子进程一并结束，
+        // 否则子进程会一直握着服务器连接，表现为"关掉 MCCX 后账号还在线"（2026-10-23）
+        ChildProcessGuard.Attach(process);
 
         StreamWriter writer = new(cmdPipe, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false))
         {
@@ -194,6 +251,10 @@ public sealed class RunnerProcess : IAccountSession
         {
             // 拿不到退出事件也不能算失败：事件管道 EOF 会兜底
         }
+
+        // 命令管道改成"界面线程只管入队、专门线程负责写"：
+        // 子进程一旦卡住不再读管道，旧写法会让 Flush/SendOrThrow 停在界面线程上（整个窗口未响应）
+        EnsureWriterThread();
 
         Thread eventReader = new(() => ReadEvents(evtPipe))
         {
@@ -293,6 +354,21 @@ public sealed class RunnerProcess : IAccountSession
                     DialogClosed?.Invoke(revision);
                 break;
 
+            case RunnerMessage.EvtWindow:
+                if (MccWindowInfo.Parse(message.Text) is { } window)
+                    WindowChanged?.Invoke(window);
+                break;
+
+            case RunnerMessage.EvtWindowEnd:
+                if (int.TryParse(message.Text, out int windowId))
+                    WindowClosed?.Invoke(windowId);
+                break;
+
+            case RunnerMessage.EvtCommands:
+                if (ParseCommandList(message.Text) is { } commands)
+                    ServerCommandsChanged?.Invoke(commands);
+                break;
+
             case RunnerMessage.EvtReady:
             default:
                 break;
@@ -316,6 +392,9 @@ public sealed class RunnerProcess : IAccountSession
             tcs = _connectTcs;
             _connectTcs = null;
 
+            // 断开看门狗作废（这次断开已经由"进程没了"完成）
+            Interlocked.Increment(ref _disconnectEpoch);
+
             try
             {
                 if (_process is { HasExited: true })
@@ -327,6 +406,12 @@ public sealed class RunnerProcess : IAccountSession
             }
 
             DisposePipesLocked();
+        }
+
+        // 上一个子进程没写出去的命令全部丢掉：绝不能落到下一次启动的新进程里
+        // （例如上一条 CmdInput 在重连后突然发出去）
+        while (_writeQueue.TryTake(out _))
+        {
         }
 
         tcs?.TrySetResult(MCCConnectionState.Disconnected);
@@ -376,6 +461,9 @@ public sealed class RunnerProcess : IAccountSession
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(options);
+
+        // 新的连接流程：上一次断开留下的看门狗作废（别把新连接掐掉）
+        Interlocked.Increment(ref _disconnectEpoch);
 
         TaskCompletionSource<MCCConnectionState> tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
         bool queued;
@@ -479,6 +567,13 @@ public sealed class RunnerProcess : IAccountSession
         if (_disposed)
             return;
 
+        bool running;
+        lock (_gate)
+            running = _running;
+
+        if (!running)
+            return;
+
         try
         {
             SendOrConfig(new RunnerMessage { Type = RunnerMessage.CmdDisconnect });
@@ -486,7 +581,11 @@ public sealed class RunnerProcess : IAccountSession
         catch
         {
             // 进程没了就没什么可断的
+            return;
         }
+
+        // 兜底：子进程要是卡在断开流程里，5 秒后直接结束它（见 ArmDisconnectWatchdog）
+        ArmDisconnectWatchdog();
     }
 
     public void ConfigureAttack(bool enabled, AttackOptions options)
@@ -545,6 +644,38 @@ public sealed class RunnerProcess : IAccountSession
     /// <summary>自动行走（2026-10-04 需求）：一直朝当前朝向前进，没有参数，只有开关。</summary>
     public void ConfigureWalk(bool enabled) =>
         SendOrConfig(new RunnerMessage { Type = RunnerMessage.CmdWalk, On = enabled });
+
+    /// <summary>
+    /// 自动指令（2026-10-22 需求）：开关 + 整份指令表一起下发。
+    /// 进程还没起来也先记账，拉起/重启后按最新一份补发。
+    /// </summary>
+    public void ConfigureAutoCommands(bool enabled, IReadOnlyList<AutoCommandDefinition> commands)
+    {
+        ArgumentNullException.ThrowIfNull(commands);
+
+        SendOrConfig(new RunnerMessage
+        {
+            Type = RunnerMessage.CmdAutoCommands,
+            On = enabled,
+            AutoCommands = [.. commands],
+        });
+    }
+
+    /// <summary>
+    /// 功能“过程日志”开关（2026-10-20）：随配置一起记账，子进程重启/晚启动都会补发。
+    /// 下发后由子进程改 Bot 的 <c>ProcessLogEnabled</c>，日志在 Bot 里就不产生。
+    /// </summary>
+    public void SetFeatureLog(string key, bool enabled)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(key);
+
+        SendOrConfig(new RunnerMessage
+        {
+            Type = RunnerMessage.CmdLogSwitch,
+            Key = key,
+            On = enabled,
+        });
+    }
 
     /// <summary>
     /// 服务器信息过滤（2026-10-04 需求）：模式 + 两份前缀随账号下发，连接中/已连接都生效。
@@ -665,6 +796,68 @@ public sealed class RunnerProcess : IAccountSession
         }
     }
 
+    /// <summary>
+    /// 容器窗口操作：点格子 / 关窗口。只要求子进程活着（窗口内容随时可能因为网络抖动重来一遍，
+    /// 不用等"已连接"的判定）。发送失败会在日志里说明。
+    /// </summary>
+    public bool WindowClick(MccWindowClick click)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(click);
+
+        bool running;
+        lock (_gate)
+        {
+            running = _running;
+        }
+
+        if (!running)
+        {
+            LogReceived?.Invoke("§8当前没有运行中的账号进程，容器操作已忽略。");
+            return false;
+        }
+
+        try
+        {
+            SendOrThrow(new RunnerMessage { Type = RunnerMessage.CmdWindowClick, Text = click.ToJson() });
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LogReceived?.Invoke($"§c容器操作发送失败：{ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 开 / 收"玩家背包"面板：打开后子进程会把玩家背包（窗口 0）的内容跟着推过来。
+    /// 与容器点击一样只要求子进程活着（重连后会话会自己接着推，父进程不用重发）。返回是否已投递。
+    /// </summary>
+    public bool WatchPlayerInventory(bool watch)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        bool running;
+        lock (_gate)
+        {
+            running = _running;
+        }
+
+        if (!running)
+            return false;
+
+        try
+        {
+            SendOrThrow(new RunnerMessage { Type = RunnerMessage.CmdWindowWatch, On = watch });
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LogReceived?.Invoke($"§c背包面板操作发送失败：{ex.Message}");
+            return false;
+        }
+    }
+
     public void Dispose()
     {
         Process? process;
@@ -696,6 +889,9 @@ public sealed class RunnerProcess : IAccountSession
                     // 管道已经不通就直接等 Kill
                 }
 
+                // 命令是排队写的：给写线程一点时间把 CmdQuit 真正冲进管道
+                WaitForWriteQueueDrain(300);
+
                 exited = process.WaitForExit(ExitWaitMs);
                 if (!exited)
                     process.Kill(entireProcessTree: true);
@@ -722,6 +918,16 @@ public sealed class RunnerProcess : IAccountSession
         {
             // 忽略
         }
+
+        // 写线程是 GetConsumingEnumerable 上的阻塞循环：收尾后放它退出（不然每个销毁的账号都留一个挂住的线程）
+        try
+        {
+            _writeQueue.CompleteAdding();
+        }
+        catch
+        {
+            // 已经 Complete 过
+        }
     }
 
     #endregion
@@ -739,7 +945,11 @@ public sealed class RunnerProcess : IAccountSession
 
             _state = state;
             if (state == MCCConnectionState.Disconnected)
+            {
                 _gameJoined = false;
+                // 子进程确认断开了：断开看门狗作废
+                Interlocked.Increment(ref _disconnectEpoch);
+            }
 
             tcs = state is MCCConnectionState.Connected or MCCConnectionState.Disconnected
                 ? _connectTcs
@@ -777,7 +987,7 @@ public sealed class RunnerProcess : IAccountSession
 
             // 配置类命令先记账：进程还没起来（或之后重启）都要按最新设置补发
             if (IsConfigCommand(message.Type))
-                _config[message.Type] = message;
+                _config[ConfigKeyOf(message)] = message;
         }
 
         if (!running)
@@ -792,6 +1002,18 @@ public sealed class RunnerProcess : IAccountSession
             // 进程刚好退出：配置已经记在 _config 里，下次 Start 会补发
         }
     }
+
+    /// <summary>
+    /// 记账用的键。日志开关是"一个功能一条"、共用 <see cref="RunnerMessage.CmdLogSwitch"/> 这一个
+    /// <see cref="RunnerMessage.Type"/>，按类型存只会留下最后发的那一个（2026-10-22 用户报的
+    /// "重启后自动钓鱼日志开关失效、再手动拨一次才好"就是这个：补发时只剩最后发的那一个键，
+    /// 其余功能全退回默认"开"）——
+    /// 所以日志开关必须按 类型 + Key 存。其它配置一个类型只有一份，照旧按类型。
+    /// </summary>
+    private static string ConfigKeyOf(RunnerMessage message) =>
+        message.Type == RunnerMessage.CmdLogSwitch
+            ? message.Type + ":" + (message.Key ?? string.Empty)
+            : message.Type;
 
     private void FlushConfig()
     {
@@ -818,26 +1040,116 @@ public sealed class RunnerProcess : IAccountSession
         type is RunnerMessage.CmdAttack or RunnerMessage.CmdMouse
             or RunnerMessage.CmdFishing or RunnerMessage.CmdAutoRefill
             or RunnerMessage.CmdWalk
+            or RunnerMessage.CmdAutoCommands
             or RunnerMessage.CmdMsgFilter
-            or RunnerMessage.CmdReconnect;
+            or RunnerMessage.CmdReconnect
+            or RunnerMessage.CmdLogSwitch;
 
+    /// <summary>
+    /// 把消息放进发送队列就返回（真正的管道写入在 <see cref="_writerThread"/> 上）。
+    /// <para>
+    /// 2026-10-23：旧写法直接在调用线程上写管道 + Flush。子进程一旦卡住（MCC 主线程死锁、
+    /// 对话框回写阻塞…）管道缓冲区写满，调用线程就会永远停在这一行；
+    /// 而调用方大多是界面线程（发输入、提交对话框、拨开关），表现就是整个窗口"未响应"。
+    /// </para>
+    /// </summary>
     private void SendOrThrow(RunnerMessage message)
     {
-        StreamWriter writer;
         lock (_gate)
         {
             if (!_running)
                 throw new InvalidOperationException("账号子进程未运行。");
 
-            writer = _cmdWriter ?? throw new InvalidOperationException("命令管道未就绪。");
+            if (_cmdWriter is null)
+                throw new InvalidOperationException("命令管道未就绪。");
         }
 
-        lock (_writeGate)
+        if (!_writeQueue.TryAdd(message.ToJson()))
+            throw new InvalidOperationException("账号子进程长时间没有响应（命令队列已满），这条命令已丢弃。");
+    }
+
+    private void EnsureWriterThread()
+    {
+        if (_writerThread is not null)
+            return;
+
+        _writerThread = new Thread(WriteLoop)
         {
-            writer.Write(message.ToJson());
-            writer.Write('\n');
-            writer.Flush();
+            IsBackground = true,
+            Name = "MCCX runner command writer",
+        };
+        _writerThread.Start();
+    }
+
+    /// <summary>命令管道唯一的写入者：按入队顺序写，写失败只丢失这一条（连接状态由事件管道兜底）。</summary>
+    private void WriteLoop()
+    {
+        foreach (string line in _writeQueue.GetConsumingEnumerable())
+        {
+            StreamWriter? writer;
+            lock (_gate)
+                writer = _cmdWriter;
+
+            if (writer is null)
+                continue; // 子进程已退出：丢掉（配置已经记账，下次启动补发）
+
+            try
+            {
+                writer.Write(line);
+                writer.Write('\n');
+                writer.Flush();
+            }
+            catch
+            {
+                // 管道断了：子进程退出会走 HandleChildExit
+            }
         }
+    }
+
+    /// <summary>等写线程把队列冲干净（退出前发 CmdQuit 用；等不到就直接进 Kill 流程）。</summary>
+    private void WaitForWriteQueueDrain(int timeoutMs)
+    {
+        long deadline = Environment.TickCount64 + timeoutMs;
+        while (_writeQueue.Count > 0 && Environment.TickCount64 < deadline)
+            Thread.Sleep(10);
+    }
+
+    /// <summary>
+    /// 断开看门狗（2026-10-23）：点了断开却迟迟收不到"已断开"，就把子进程结束掉。
+    /// 子进程一死，套接字由操作系统关闭，服务器立刻看到玩家离线 ——
+    /// 这是"界面显示未连接、服务器上却还挂着在线"的最后一道保险。
+    /// </summary>
+    private void ArmDisconnectWatchdog()
+    {
+        int epoch = Interlocked.Increment(ref _disconnectEpoch);
+
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(DisconnectForceKillMs).ConfigureAwait(false);
+
+            // 期间连上过 / 已经确认断开 / 又发起过新的断开：这一轮作废
+            if (Volatile.Read(ref _disconnectEpoch) != epoch)
+                return;
+
+            Process? process;
+            lock (_gate)
+            {
+                if (!_running || _state == MCCConnectionState.Disconnected)
+                    return;
+
+                process = _process;
+            }
+
+            try
+            {
+                LogReceived?.Invoke("§e断开超时：子进程 5 秒内没有确认断开，已强制结束它（服务器会看到离线）。");
+                process?.Kill(entireProcessTree: true);
+            }
+            catch
+            {
+                // 进程刚好自己退了
+            }
+        });
     }
 
     #endregion

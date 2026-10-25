@@ -1856,6 +1856,9 @@ You can use "/chunk status {0:0.0} {1:0.0} {2:0.0}" to check the chunk loading s
   <data name="exception.packet_process" xml:space="preserve">
     <value>Failed to process incoming packet of type {0}. (PacketID: {1}, Protocol: {2}, LoginPhase: {3}, InnerException: {4}).</value>
   </data>
+  <data name="exception.packet_decode_skipped" xml:space="preserve">
+    <value>Skipped malformed incoming packet of type {0} ({1}). The connection is kept alive.</value>
+  </data>
   <data name="exception.palette.block" xml:space="preserve">
     <value>Please update block types handling for this Minecraft version. See Material.cs</value>
   </data>

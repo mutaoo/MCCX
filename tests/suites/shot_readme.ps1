@@ -254,7 +254,13 @@ try {
     foreach ($t in $texts) { Assert-NoSensitive '账号列表' $t }
     foreach ($t in $texts) { if ($t -notmatch '^Test(Alpha|Bravo|Charlie)( /|$)') { throw "列表含非预期账号: $t" } }
 
-    # ---- 4) 选中 TestAlpha（本地测试服），清掉启动日志（含本机路径行） ----
+    # ---- 4) 选中 TestAlpha（本地测试服） ----
+    # 2026-10-19：原来这里会点「清空日志」把启动日志（含"用户数据目录：<本机路径>"那几行）清掉，
+    # 但 2026-10-16 起命令栏（发送 / 清空日志）与日志搜索**只在连上服务器后显示**，
+    # 离线时截不到那个按钮 —— 改成不需要清：脚本先换掉账号库再启动，**启动时一个账号都没有**，
+    # MainViewModel 那几条启动日志 `first?.WriteNote(...)` 没有账号可写，画面天然干净；
+    # 各账号自己的日志只有一行"已添加账号 …（服务器:端口）。"。
+    # 下面照样用 UIA 读一遍日志做兜底断言：只要日志里出现盘符路径就中止，绝不让本机路径进截图。
     $list = Find-ById $script:AppRoot 'AccountList'
     $item = Find-ListItemByText $list '^TestAlpha( /|$)'
     if (-not $item) { throw '找不到 TestAlpha' }
@@ -268,8 +274,11 @@ try {
     if ($srvVal -ne '127.0.0.1' -or $usrVal -ne 'TestAlpha') { throw "面板字段异常: srv=$srvVal user=$usrVal" }
     Assert-NoSensitive '服务器框' $srvVal
     Assert-NoSensitive '用户名框' $usrVal
-    Invoke-UiButton '清空日志'
-    Start-Sleep -Milliseconds 500
+    $panelLog = Get-RecentLogText
+    if ($panelLog -match '[A-Za-z]:\\' -or $panelLog -match '用户数据目录') {
+        throw "日志里出现本机路径/数据目录行，不能进截图: $panelLog"
+    }
+    Write-Host ('LOG(截前): ' + ($panelLog -replace "`r?`n", ' | '))
 
     # ---- 5) 八张截图 ----
     CropGrab (Join-Path $imgDir '01-main.png')
@@ -305,6 +314,8 @@ try {
     Close-AllFlyouts
 
     # ---- 6) 连接本地测试服（TestAlpha）→ 08 ----
+    # 已在跑就直接用（只打印一行），没跑就按 autolib 的口径起 25599（26.1 服务端要 Java 25）
+    Start-LocalTestServer -Port 25599
     Invoke-UiButton '连接'
     Wait-For -TimeoutMs 30000 -What '连接成功' -Probe {
         $s = Get-WindowStateText $script:AppRoot
@@ -316,6 +327,7 @@ try {
     $logTxt = Get-RecentLogText -Max 60
     Assert-NoSensitive '日志' $logTxt
     CropGrab (Join-Path $imgDir '08-connected.png')
+
     Invoke-UiButton '断开'
     Wait-For -TimeoutMs 20000 -What '断开完成' -Probe {
         $s = Get-WindowStateText $script:AppRoot

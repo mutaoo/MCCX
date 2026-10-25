@@ -110,7 +110,7 @@ internal sealed class CustomAutoAttackBot : ChatBot
         {
             if (_lastTargetId is not null)
             {
-                LogToConsole("§8[砍怪] 目标已离开范围，回到待命。");
+                LogProcess("§8[砍怪] 目标已离开范围，回到待命。");
                 _lastTargetId = null;
             }
 
@@ -126,7 +126,7 @@ internal sealed class CustomAutoAttackBot : ChatBot
             if (_lastTargetId != targetId)
             {
                 _lastTargetId = targetId;
-                LogToConsole($"§7[砍怪] 攻击 {targetName}（{targetDist:0.0} 格）");
+                LogProcess($"§7[砍怪] 攻击 {targetName}（{targetDist:0.0} 格）");
             }
         }
 
@@ -144,11 +144,11 @@ internal sealed class CustomAutoAttackBot : ChatBot
         if (health <= 0)
         {
             _attacked.Remove(entity.ID);
-            LogToConsole($"§a[砍怪] {entity.GetTypeString()} 已被消灭。");
+            LogProcess($"§a[砍怪] {entity.GetTypeString()} 已被消灭。");
         }
         else
         {
-            LogToConsole($"§7[砍怪] {entity.GetTypeString()} 受到伤害，剩余生命 {health:0.#}");
+            LogProcess($"§7[砍怪] {entity.GetTypeString()} 受到伤害，剩余生命 {health:0.#}");
         }
     }
 
@@ -158,7 +158,7 @@ internal sealed class CustomAutoAttackBot : ChatBot
         if (wasAttacked && _lastTargetId == entity.ID)
         {
             _lastTargetId = null;
-            LogToConsole($"§8[砍怪] {entity.GetTypeString()} 已消失。");
+            LogProcess($"§8[砍怪] {entity.GetTypeString()} 已消失。");
         }
     }
 

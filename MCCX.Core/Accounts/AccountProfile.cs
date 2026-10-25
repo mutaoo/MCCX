@@ -55,6 +55,15 @@ public sealed class AccountProfile
     /// <summary>自动行走开关（一直朝当前朝向前进，2026-10-04 需求）。</summary>
     public bool AutoWalkEnabled { get; set; }
 
+    /// <summary>自动指令总开关（2026-10-22 需求：按各自间隔定时执行指令）。</summary>
+    public bool AutoCommandsEnabled { get; set; }
+
+    /// <summary>
+    /// 自动指令表（2026-10-22 需求）：每条各自带间隔（秒）与"进服立即执行"；
+    /// 老账号库没有该字段时为空表，不影响读取。
+    /// </summary>
+    public List<AutoCommandDefinition> AutoCommands { get; set; } = [];
+
     /// <summary>服务器信息过滤模式（0 不过滤 / 1 全屏蔽 / 2 只屏蔽玩家消息 / 3 只显示指定前缀 / 4 只屏蔽指定前缀，2026-10-04 需求）。</summary>
     public int ServerFilterMode { get; set; }
 
@@ -78,16 +87,33 @@ public sealed class AccountProfile
     /// <summary>断线自动重连参数（开关 / 次数 / 间隔）。次数 0 = 无限。</summary>
     public ReconnectOptions? Reconnect { get; set; }
 
+    // ---- 服务器登录密码（2026-10-23 需求：记住密码 / 自动登录）----
+    // 注意：这是"服务器对话框里要填的登录密码"，不是 Minecraft 账号凭据（后者是 Credential）。
+    // 与 Credential 一样，整份账号库在落盘前就被 AES-GCM 加密，所以这里存明文即可。
+
+    /// <summary>勾了"记住密码"时保存的服务器登录密码；没勾 / 没填过为 null。</summary>
+    public string? ServerPassword { get; set; }
+
+    /// <summary>记住密码：服务器弹密码框时自动填上 <see cref="ServerPassword"/>。</summary>
+    public bool RememberServerPassword { get; set; }
+
+    /// <summary>
+    /// 自动登录：服务器弹密码框时自动填入已记住的密码，等 1 秒再自动点登录动作。
+    /// 只有 <see cref="RememberServerPassword"/> 为真、且确实存了密码时才有意义。
+    /// </summary>
+    public bool AutoLoginServer { get; set; }
+
     /// <summary>
     /// 各功能的"过程日志"开关（2026-10-08 需求：Bot 日志刷屏，每个功能可单独关）。
     /// <para>
-    /// 键 = 功能标识（<c>MCCX_App.ViewModels.FeatureLogKeys</c>），值 = <b>是否显示该功能的过程日志</b>。
-    /// 没有记录 = 显示（老账号库与新账号默认全开），所以老库读进来不会失败。
+    /// 键 = 功能标识（<see cref="FeatureLogKeys"/>），值 = <b>是否发出该功能的过程日志</b>。
+    /// 没有记录 = 发出（老账号库与新账号默认全开），所以老库读进来不会失败。
     /// </para>
     /// <para>
     /// 关掉只屏蔽"过程日志"（攻击了谁、破坏了哪块方块这类高频行）；
-    /// <b>功能的开关状态日志照常推送</b>，否则用户看不出功能开没开（见 AccountViewModel.IsStateLog）。
-    /// 每个账号各存一份。
+    /// <b>功能的开关状态日志照常推送</b>，否则用户看不出功能开没开。
+    /// 每个账号各存一份；开关值经管道下发到子进程，由 Bot 决定日志生不产生
+    /// （2026-10-20 起不再由界面事后过滤，见 <see cref="IAccountSession.SetFeatureLog"/>）。
     /// </para>
     /// </summary>
     public Dictionary<string, bool> FeatureLogSwitches { get; set; } = [];
@@ -147,11 +173,16 @@ public sealed class AccountProfile
         Fishing = other.Fishing;
         AutoRefillEnabled = other.AutoRefillEnabled;
         AutoWalkEnabled = other.AutoWalkEnabled;
+        AutoCommandsEnabled = other.AutoCommandsEnabled;
+        AutoCommands = other.AutoCommands;
         ServerFilterMode = other.ServerFilterMode;
         ServerFilterPrefix = other.ServerFilterPrefix;
         ServerFilterShowPrefix = other.ServerFilterShowPrefix;
         ServerFilterBlockPrefix = other.ServerFilterBlockPrefix;
         Reconnect = other.Reconnect;
+        ServerPassword = other.ServerPassword;
+        RememberServerPassword = other.RememberServerPassword;
+        AutoLoginServer = other.AutoLoginServer;
         FeatureLogSwitches = other.FeatureLogSwitches;
         ViewRestoreEnabled = other.ViewRestoreEnabled;
         LastUsedAt = other.LastUsedAt;

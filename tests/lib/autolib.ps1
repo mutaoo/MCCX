@@ -29,6 +29,58 @@ function Assert-True {
 
 function Get-FailureCount { return $script:Failures.Count }
 
+function Get-JavaMajorVersion {
+    param([Parameter(Mandatory = $true)][string]$JavaExe)
+    # java -version 把版本写 stderr；直接 2>&1 在 $ErrorActionPreference='Stop' 下会被当终止错误吞掉，
+    # 因此走进程重定向读取，不依赖 PowerShell 的流语义。
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $JavaExe
+        $psi.Arguments = '-version'
+        $psi.RedirectStandardError = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $p = [System.Diagnostics.Process]::Start($psi)
+        $text = $p.StandardError.ReadToEnd() + $p.StandardOutput.ReadToEnd()
+        $p.WaitForExit()
+    } catch { return 0 }
+    $m = [regex]::Match($text, 'version\s+"?(\d+)')
+    if ($m.Success) { return [int]$m.Groups[1].Value }
+    return 0
+}
+
+function Get-TestServerJava {
+    # 本地测试服 26.1 需要 Java 25（class 文件版本 69）；Java 21 会 UnsupportedClassVersionError。
+    # 解析顺序：MCCX_TEST_JAVA 环境变量 → JAVA_HOME → 常见 JDK 安装目录（取 >= 25 的）→ PATH 中的 java。
+    $cands = New-Object System.Collections.Generic.List[string]
+    if ($env:MCCX_TEST_JAVA) { $cands.Add($env:MCCX_TEST_JAVA) }
+    if ($env:JAVA_HOME) { $cands.Add((Join-Path $env:JAVA_HOME 'bin\java.exe')) }
+
+    $roots = New-Object System.Collections.Generic.List[string]
+    foreach ($base in @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:LOCALAPPDATA)) {
+        if (-not $base) { continue }
+        $roots.Add((Join-Path $base 'Java'))
+        $roots.Add((Join-Path $base 'Eclipse Adoptium'))
+        $roots.Add((Join-Path $base 'Microsoft'))
+        $roots.Add((Join-Path $base 'Zulu'))
+    }
+    foreach ($root in $roots) {
+        if (-not (Test-Path -LiteralPath $root)) { continue }
+        foreach ($d in @(Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue)) {
+            $cands.Add((Join-Path $d.FullName 'bin\java.exe'))
+        }
+    }
+
+    foreach ($c in $cands) {
+        if (-not (Test-Path -LiteralPath $c)) { continue }
+        if ((Get-JavaMajorVersion -JavaExe $c) -ge 25) { return $c }
+    }
+    $pathJava = (Get-Command java -ErrorAction SilentlyContinue).Source
+    if ($pathJava) { return $pathJava }
+    throw '找不到 Java，无法启动本地测试服（26.1 需要 Java 25）'
+}
+
 function Stop-App {
     $ps = @(Get-Process -Name MCCX -ErrorAction SilentlyContinue)
     foreach ($p in $ps) { try { $p.Kill() } catch { } }
@@ -51,6 +103,7 @@ function Start-App {
         Start-Process -FilePath $script:AppExe -WorkingDirectory (Split-Path $script:AppExe)
     }
     $script:AppRoot = Wait-AppWindow -TimeoutMs $TimeoutMs
+    Set-EnglishInputLayout
     $script:LogListEl = $null
     Start-Sleep -Seconds 2
     return $script:AppRoot
@@ -344,9 +397,15 @@ function Get-LogList {
     # 按 AutomationId=LogList 找会扑空；它的父 ScrollViewer 有节点，而且日志行（Edit）
     # 都在它下面，所以这里返回 LogScrollHost，找不到再退回 LogList。
     if (-not $script:LogListEl) {
-        $script:LogListEl = Find-ById $script:AppRoot 'LogScrollHost'
-        if (-not $script:LogListEl) {
-            $script:LogListEl = Find-ById $script:AppRoot 'LogList'
+        # 重试几次再放弃：切"多开"/页面重建的瞬间，LogScrollHost 可能短暂不在 UIA 树里。
+        # 一次找不到就抛会**打断整个用例**（2026-10-18 出现过：p_multi 的 D1 读日志时抛
+        # '找不到日志区域'，用例直接中断，后面的收尾步骤全没跑）。
+        for ($i = 0; $i -lt 8 -and -not $script:LogListEl; $i++) {
+            try { $script:LogListEl = Find-ById $script:AppRoot 'LogScrollHost' } catch { }
+            if (-not $script:LogListEl) {
+                try { $script:LogListEl = Find-ById $script:AppRoot 'LogList' } catch { }
+            }
+            if (-not $script:LogListEl) { Start-Sleep -Milliseconds 250 }
         }
         if (-not $script:LogListEl) { throw '找不到日志区域（LogScrollHost / LogList）' }
     }
@@ -358,16 +417,19 @@ function Get-RecentLogText {
     $log = Get-LogList
 
     # 2026-10-05：日志容器从 ListView 换成 ItemsRepeater（为了让行内 TextBox 能正常框选文字，
-    # ListView 会在行内抢指针做自己的选中）。于是：
-    #   · 滚动宿主是显式的 ScrollViewer（AutomationId=LogScrollHost），先滚到底再读；
-    #   · 条目不再是 ListItem，改为收集所有 Edit（每行一个只读 TextBox）并按 ValuePattern 取文本。
-    try {
-        $host = Find-ById $script:AppRoot 'LogScrollHost'
-        if ($host) {
-            $sp = $host.GetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern)
-            if ($sp.Current.VerticallyScrollable) { $sp.SetScrollPercent(-1, 100) }
-        }
-    } catch { }
+    # ListView 会在行内抢指针做自己的选中）。于是条目不再是 ListItem，改为收集所有 Edit
+    # （每行一个只读 TextBox）并按 ValuePattern 取文本。
+    #
+    # 2026-10-18：这里以前还有一段"先把滚动宿主（AutomationId=LogScrollHost）滚到底再读"的代码，
+    # 但它是**死代码**：变量名写成了 `$host`，而 PowerShell 的 `$Host` 是只读自动变量，
+    # 赋值必抛异常、又被紧跟的 catch 吞掉，所以那一步从来没生效过。查明后**决定不补**：
+    #   · 视图贴底跟随（默认）时 UIA 读到的本来就是最新那一段，"再滚一次"没有额外收益；
+    #   · 强行 SetScrollPercent(-1, 100) 只会把可读窗口收窄成"最新一屏"，反而更容易漏掉
+    #     "刚写入、正好被挤到窗口上方"的行；
+    #   · 虚拟化列表的滚动范围是估算值，滚一次不一定真到底，还会把每次轮询拖慢约 0.4 秒。
+    # 需要"往回看老几行"时走 Get-LogTextBackward（Assert-Log 只在没找到时才翻）。
+    # 单次读的上限就是"当前实体化的一屏"（实测约 58 行）：确实要放宽可以调
+    # ItemsRepeater.VerticalCacheLength（App 侧，代价是常驻容器变多）。
     Start-Sleep -Milliseconds 250
 
     $cEdit = New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, $script:CT::Edit)
@@ -392,7 +454,15 @@ function Get-RecentLogText {
 }
 
 function Clear-Log {
-    Invoke-UiButton '清空日志'
+    # 2026-10-16：命令栏（含"清空日志"）改成只在连上服务器后才显示；没连上时按钮在 UIA 里根本不存在。
+    # 未连接时清不了日志，这里直接跳过并留一行说明——调用方别再拿"清完日志"当唯一依据。
+    $btn = $null
+    try { $btn = Get-UiButton '清空日志' } catch { $btn = $null }
+    if (-not $btn) {
+        Write-Host '  [ui] 未连接：清空日志按钮已隐藏，跳过清日志'
+        return
+    }
+    Invoke-Element $btn
     Start-Sleep -Milliseconds 400
 }
 
@@ -405,16 +475,110 @@ function Wait-LogContains {
     }
 }
 
-function Assert-Log {
-    param([string]$Pattern, [string]$Name, [int]$TimeoutMs = 30000)
-    $found = $false
+function Get-LogTextBackward {
+    # 把"当前一屏"和"往回翻时经过的几屏"拼起来 —— 用于断言"某行确实进过日志"。
+    # 为什么需要：日志区是虚拟化列表，UIA 一次只读得到"已实体化"的行 —— 实测宽 731 px 的宿主上
+    # 约 53 行（可见一屏约 26 行 + VerticalCacheLength 多留的那部分）。日志一旦长过这个宽度，
+    # 被顶上去的老行单次读就永远读不到（2026-10-18 批量跑 g_* / p_multi 的假红就是这个机制）。
+    # 2026-10-18 实测确认这条兜底成立：日志长过视口时 ScrollPattern 是可滚动的，
+    # `Scroll(NoAmount, LargeDecrement)` 每叫一次真的往回挪约一屏、让更多老行实体化
+    # （实测 pct 100 → 84 → 65 时，能读到的行数 53 → 79 → 85）；反过来 SetScrollPercent(-1,100)
+    # 会把可读行数压回 54 —— 这也是"平时不要硬滚到底"的实测依据。
+    # 日志没长过视口时本来就全读得到（此时 VerticallyScrollable=False、Scroll 会抛异常，已兜住）。
+    # 翻完滚回底部，不留半路状态；只在"正常读没找到"时才调用 —— happy path 一次都不用翻。
+    param([string]$StopPattern = '', [int]$Steps = 8, [int]$SleepMs = 200)
+    $chunks = @()
+    $chunks += (Get-RecentLogText -Max 100000)
+    if ($StopPattern -and (($chunks -join "`n") -match $StopPattern)) { return ($chunks -join "`n") }
+
+    $logHost = $null
+    try { $logHost = Find-ById $script:AppRoot 'LogScrollHost' } catch { }
+    if (-not $logHost) { return ($chunks -join "`n") }
+    $sp = $null
+    try { $sp = $logHost.GetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern) } catch { }
+    if (-not $sp) { return ($chunks -join "`n") }
+
     try {
-        Wait-LogContains $Pattern $TimeoutMs | Out-Null
-        $found = $true
-    } catch {
-        $found = $false
+        $scrollable = $false
+        try { $scrollable = [bool]$sp.Current.VerticallyScrollable } catch { }
+        if (-not $scrollable) { return ($chunks -join "`n") }
+
+        $noAmount = [System.Windows.Automation.ScrollAmount]::NoAmount
+        $onePageUp = [System.Windows.Automation.ScrollAmount]::LargeDecrement
+        for ($i = 0; $i -lt $Steps; $i++) {
+            $atTop = $false
+            try { $atTop = ($sp.Current.VerticalScrollPercent -le 0.5) } catch { }
+            if ($atTop) { break }
+            try { $sp.Scroll($noAmount, $onePageUp) } catch { break }
+            Start-Sleep -Milliseconds $SleepMs
+            $chunks += (Get-RecentLogText -Max 100000)
+            if ($StopPattern -and (($chunks -join "`n") -match $StopPattern)) { break }
+        }
+    } finally {
+        try { $sp.SetScrollPercent(-1, 100) } catch { }
+        Start-Sleep -Milliseconds 100
     }
-    Assert-True $found $Name "(未匹配: $Pattern)"
+    return ($chunks -join "`n")
+}
+
+function Assert-Log {
+    # 失败信息里带上"最后一次读到多少行、最早一行是什么"：
+    # 日志区是虚拟化列表（UIA 只实体化可视窗口，实测约 58 行），失败的典型原因就是
+    # "那一行已经被挤出窗口"，有这两个数字一眼就能区分是"没写日志"还是"窗口太小"。
+    param([string]$Pattern, [string]$Name, [int]$TimeoutMs = 30000)
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $last = ''
+    $found = $false
+    $deepTried = $false
+    while ($sw.ElapsedMilliseconds -lt $TimeoutMs) {
+        # 读日志本身也可能短暂失败（页面重建瞬间）—— 不能让它把用例打断
+        try { $last = Get-RecentLogText } catch { }
+        if ($last -match $Pattern) { $found = $true; break }
+        # 先正常等（刚写进来的行就在最新一屏，最快的路径是直接读到）；
+        # 等不到再往回翻一遍（兜住"被后续几十行挤出窗口"的情况），翻完继续等。
+        if (-not $deepTried -and $sw.ElapsedMilliseconds -gt 2500) {
+            $deepTried = $true
+            try {
+                $back = Get-LogTextBackward -StopPattern $Pattern
+                if ($back -match $Pattern) { $found = $true; break }
+            } catch { }
+        }
+        Start-Sleep -Milliseconds 350
+    }
+    if ($found) {
+        Assert-True $true $Name
+        return
+    }
+    $lines = @($last -split "`n")
+    $head = ''
+    if ($lines.Count -gt 0) {
+        $head = $lines[0]
+        if ($head.Length -gt 60) { $head = $head.Substring(0, 60) }
+    }
+    Assert-True $false $Name ("未匹配: {0}；可读行数={1}，最早一行=[{2}]" -f $Pattern, $lines.Count, $head)
+}
+
+function Assert-Connected {
+    # 断言"已经连上服务器"：**看状态条**，不再断言日志里那一行「连接成功！」。
+    # 为什么改：日志区是虚拟化列表，UIA 只实体化约 58 行；进服瞬间会灌进几十行
+    # （本地测试服跑久了更明显 —— 加入时服务端会把聊天记录一起回放），
+    # 「连接成功！」经常在第一次读取之前就被挤出可读窗口。2026-10-18 实测同一批 run_g：
+    # 07:30 六个用例全绿、11:44 红 3 个、12:30 红 5 个，失败信息全是这类连接断言；
+    # 而同一用例单独跑都是绿的 —— 断言本身有固有竞态，不是功能坏了。
+    # 日志通道仍有覆盖：紧随其后的 Assert-Log '已进入游戏'，以及 Ensure-Connected 里的
+    # Wait-LogContains '已进入游戏'。
+    # 参数顺序刻意对齐原来的 `Assert-Log '<pattern>' '<label>' <timeout>`，方便就地替换。
+    param([string]$Name = '本地测试服连接成功', [int]$TimeoutMs = 90000)
+    $st = ''
+    try {
+        $st = Wait-For -TimeoutMs $TimeoutMs -What '状态条显示「已连接 …」' -Probe {
+            $x = Get-WindowStateText $script:AppRoot
+            if ($x -like '已连接 *') { $x } else { $null }
+        }
+    } catch {
+        $st = Get-WindowStateText $script:AppRoot
+    }
+    Assert-True ($st -like '已连接 *') $Name "state=[$st]"
 }
 
 # ---------- 连接状态 ----------
@@ -465,6 +629,178 @@ function Send-MccCommand {
     Set-Edit $box $Text
     Invoke-UiButton '发送'
     Start-Sleep -Milliseconds 600
+}
+
+# ---------- 测试会话（命令栏/日志搜索框只在连上服务器后才显示，要看这些控件的用例先开一个） ----------
+# 2026-10-16 需求：没连上服务器时命令栏（常用命令/输入框/发送/清空日志）和日志搜索框整块收起。
+# 于是"要摸这些控件"的用例（g_search / g_new…）必须先真的连上一个服务器——只用 UIA 点界面，
+# 连的是本机测试服，账号是专用测试账号，结束删掉，不碰用户已有账号（流程与 p_multi / g_walk 同款，
+# 那些用例各自留了一份副本，这里收拢一份给新用例用）。
+
+function Test-LocalServerListening {
+    param([string]$Port = '25599')
+    return [bool](netstat -ano | Select-String ":$Port\s.*LISTENING")
+}
+
+# 起本地测试服（26.1 / Java 25）；已经在跑就直接用。端口按 server.properties 里的实际值对齐。
+function Start-LocalTestServer {
+    param([string]$Port = '25599', [int]$TimeoutSec = 120)
+    $dir = Join-Path $PSScriptRoot '..\artifacts\mcserver\26.1'
+    if (-not (Test-Path (Join-Path $dir 'server.jar'))) { throw "本地测试服缺失: $dir" }
+    $props = Join-Path $dir 'server.properties'
+    if (Test-Path $props) {
+        Set-Content -Path $props -Value ((Get-Content $props) -replace '^server-port=.*$', "server-port=$Port") -Encoding ASCII
+    }
+    if (Test-LocalServerListening -Port $Port) {
+        Write-Host "  [srv] 本地测试服已在运行 127.0.0.1:$Port"
+        return
+    }
+    $java = Get-TestServerJava
+    Start-Process -FilePath $java -ArgumentList '-Xmx1G', '-jar', 'server.jar', 'nogui' `
+        -WorkingDirectory $dir -WindowStyle Hidden `
+        -RedirectStandardOutput (Join-Path $dir 'test.out.log') `
+        -RedirectStandardError (Join-Path $dir 'test.err.log')
+    for ($i = 0; $i -lt [int]($TimeoutSec / 2); $i++) {
+        Start-Sleep -Seconds 2
+        if (Test-LocalServerListening -Port $Port) {
+            Write-Host "  [srv] 本地测试服已启动 127.0.0.1:$Port"
+            return
+        }
+    }
+    throw "本地测试服启动超时（$Port 未监听）"
+}
+
+# 账号列表里每一项的文字（账号名 / 状态 / 地址都在模板的文字里；item 自己的 Name 只是 ViewModel 类型名）
+function Get-UiAccountRows {
+    $list = Find-ById $script:AppRoot 'AccountList'
+    if (-not $list) { return @() }
+    $c = New-Object System.Windows.Automation.PropertyCondition($script:AE::ControlTypeProperty, $script:CT::Text)
+    $rows = @()
+    foreach ($it in (Get-ListItems $list)) {
+        $parts = @()
+        foreach ($t in $it.FindAll([System.Windows.Automation.TreeScope]::Descendants, $c)) { $parts += [string]$t.Current.Name }
+        $rows += ($parts -join ' | ')
+    }
+    return $rows
+}
+
+function Add-UiTestAccount {
+    param([string]$User, [string]$Server = '127.0.0.1', [string]$Port = '25599')
+    Invoke-UiButton '添加账号'
+    $null = Wait-For -TimeoutMs 10000 -What '添加账号弹窗出现' -Probe {
+        $e = $null; try { $e = Find-ById $script:AppRoot 'NewServerBox' } catch { }
+        if ($e) { 'open' } else { $null }
+    }
+    # 默认勾着"立即连接"：先取消，等会儿自己点连接（也留出"未连接时界面长什么样"的观察窗口）
+    $cb = $null
+    for ($i = 0; $i -lt 10 -and -not $cb; $i++) {
+        $c = New-Object System.Windows.Automation.AndCondition(
+            (New-Object System.Windows.Automation.PropertyCondition($script:AE::ControlTypeProperty, $script:CT::CheckBox)),
+            (New-Object System.Windows.Automation.PropertyCondition($script:AE::NameProperty, '立即连接')))
+        $cb = $script:AppRoot.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $c)
+        if (-not $cb) { Start-Sleep -Milliseconds 300 }
+    }
+    if ($cb) {
+        $tp = $cb.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
+        if ($tp.Current.ToggleState -eq [System.Windows.Automation.ToggleState]::On) { $tp.Toggle(); Start-Sleep -Milliseconds 300 }
+    }
+    Set-Edit (Find-Edit $script:AppRoot 'NewServerBox') $Server
+    Set-Edit (Find-Edit $script:AppRoot 'NewPortBox') $Port
+    Set-Edit (Find-Edit $script:AppRoot 'NewUserBox') $User
+    Set-Edit (Find-Edit $script:AppRoot 'NewVersionBox') 'auto'
+    $btn = Find-Button $script:AppRoot '添加'
+    if (-not $btn) { throw '添加账号弹窗里找不到 [添加] 按钮' }
+    Invoke-Element $btn
+    $null = Wait-For -TimeoutMs 10000 -What '添加账号弹窗关闭' -Probe {
+        $e = $null; try { $e = Find-ById $script:AppRoot 'NewServerBox' } catch { }
+        if ($e) { $null } else { 'closed' }
+    }
+}
+
+# ---------- 账号列表的通用读取 ----------
+# 2026-10-18：`Get-AccountListEl` / `Get-AccountCount` 原来是 11 个用例各写一份
+# （内容逐字相同），`Wait-AccountCount` 只能用调用方那份 —— 调用方漏定义就直接报
+# "无法识别 Get-AccountCount"。收进公共库，用例只管调。
+
+function Get-AccountListEl {
+    $l = Find-ById $script:AppRoot 'AccountList'
+    if (-not $l) { throw '找不到账号列表 AccountList' }
+    return $l
+}
+
+function Get-AccountCount { return @(Get-ListItems (Get-AccountListEl)).Count }
+
+function Wait-AccountCount {
+    # 账号列表项数回到期望值（轮询等 UI 结算）。
+    # 为什么需要：删掉一个账号后 ListView 会重建，UIA 可能**短暂**少读到一个 ListItem，
+    # 单点读一次会偶发假红 —— 2026-10-18 `g_refill` 收尾 X1 出现过 after=10 before=11，
+    # 而当时账号库文件里 11 个账号一个没少。只容忍"暂时对不上"：真被污染（多/少一个账号）
+    # 会一直对不上，超时后返回当前值，X1 断言照样失败。
+    param([int]$Expect, [int]$TimeoutMs = 10000)
+    try {
+        $null = Wait-For -TimeoutMs $TimeoutMs -What "账号数回到 $Expect" -Probe {
+            if ((Get-AccountCount) -eq $Expect) { 'ok' } else { $null }
+        }
+    } catch { }
+    return (Get-AccountCount)
+}
+
+function Select-UiAccount {
+    param([string]$User, [int]$TimeoutMs = 10000)
+    $item = $null
+    for ($i = 0; $i -lt 10 -and -not $item; $i++) {
+        $item = Find-ListItemByText (Find-ById $script:AppRoot 'AccountList') $User
+        if (-not $item) { Start-Sleep -Milliseconds 400 }
+    }
+    if (-not $item) { throw "账号列表里找不到 $User" }
+    Select-Item $item
+    $null = Wait-For -TimeoutMs $TimeoutMs -What "面板切到 $User" -Probe {
+        $v = $null; try { $v = Get-EditValue (Find-Edit $script:AppRoot 'UserBox') } catch { }
+        if ($v -eq $User) { $v } else { $null }
+    }
+}
+
+# 开一个"已连接"的测试会话：起本地测试服 → 清残留测试账号 → 记账号列表基线 → 加账号 → 选中 → 连接。
+# 返回的 hashtable 交给 Exit-TestSession 收尾（断开 + 删账号 + 核对列表回到基线）。
+function Enter-TestSession {
+    param([string]$User = 'MccXUiTest', [string]$Server = '127.0.0.1', [string]$Port = '25599', [int]$TimeoutMs = 120000)
+    Start-LocalTestServer -Port $Port
+    $list = Find-ById $script:AppRoot 'AccountList'
+    if (-not $list) { throw '找不到账号列表 AccountList' }
+    if (Find-ListItemByText $list $User) {
+        Write-Host "  [clean] 删除残留账号 $User"
+        $null = Remove-AccountViaUi $User
+        Start-Sleep -Seconds 2
+    }
+    $baseline = @(Get-UiAccountRows)
+    Add-UiTestAccount -User $User -Server $Server -Port $Port
+    Select-UiAccount -User $User
+    Invoke-UiButton '连接'
+    $st = Wait-For -TimeoutMs $TimeoutMs -What "连接 $Server`:$Port" -Probe {
+        $s = Get-WindowStateText $script:AppRoot
+        if ($s -like '已连接 *') { $s }
+    }
+    # 真正进世界之后命令栏才算"活"的（和 Ensure-Connected 同一个理由）
+    Wait-LogContains '已进入游戏' 60000 | Out-Null
+    return @{ User = $User; Baseline = $baseline; StateText = $st }
+}
+
+function Exit-TestSession {
+    param($Session)
+    if (-not $Session) { return }
+    try { Disconnect-App } catch { Write-Host ("  [clean] 断开失败: " + $_.Exception.Message) }
+    try {
+        if (-not (Remove-AccountViaUi $Session.User)) { Write-Host "  [clean] 测试账号 $($Session.User) 已不在列表里" }
+    } catch { Write-Host ("  [clean] 删账号失败: " + $_.Exception.Message) }
+    Start-Sleep -Seconds 2
+    $after = @(Get-UiAccountRows)
+    if (($after -join '|') -ne ($Session.Baseline -join '|')) {
+        Write-Host '  [clean] 警告：账号列表和基线不一致'
+        Write-Host "    before: $($Session.Baseline -join ' / ')"
+        Write-Host "    after : $($after -join ' / ')"
+    } else {
+        Write-Host '  [clean] 账号列表已回到基线'
+    }
 }
 
 # ---------- 世界/玩家状态（全部走 RCON） ----------

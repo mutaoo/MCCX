@@ -943,6 +943,34 @@ namespace MinecraftClient.Scripting
         }
 
         /// <summary>
+        /// MCCX 功能日志开关（2026-10-20 用户需求）：为 false 时，本 Bot 的<b>过程日志</b>
+        /// 用 <see cref="LogProcess"/> 写的那部分<b>根本不会产生</b>——既不进控制台、
+        /// 也不进日志文件、更不会经管道送到 MCCX 日志区。
+        /// <para>
+        /// 与旧做法（Bot 照常输出，界面再按 <c>[标签]</c> 文本把行吞掉）的区别：
+        /// 旧做法依赖日志文本里的标签，MCC 汉化后标签从 <c>AutoFishing</c> 变成
+        /// <c>自动钓鱼</c>，匹配一失效开关就"看起来坏了"。这里按 Bot 实例判断，
+        /// 与文本、语言、颜色码都无关。
+        /// </para>
+        /// <para>
+        /// 开关状态/结果类提示（已开启、已就绪、需要××）仍走 <see cref="LogToConsole"/>，
+        /// 不受本开关影响：关掉日志后用户仍要看得见功能开没开。
+        /// </para>
+        /// </summary>
+        public bool ProcessLogEnabled { get; set; } = true;
+
+        /// <summary>
+        /// Write a bot <b>process</b> log line (per-attack / per-cast / debug trace).
+        /// Suppressed at the source when <see cref="ProcessLogEnabled"/> is false.
+        /// </summary>
+        /// <param name="text">Log text to write</param>
+        protected void LogProcess(object? text)
+        {
+            if (ProcessLogEnabled)
+                LogToConsole(text);
+        }
+
+        /// <summary>
         /// Write some text in the console. Nothing will be sent to the server.
         /// </summary>
         /// <param name="text">Log text to write</param>

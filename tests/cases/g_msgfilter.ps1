@@ -8,6 +8,7 @@
 #   C（只屏蔽玩家消息）：`<名字>` 开头被挡、系统消息放行；
 #   D（只显示指定前缀）：`[mfpre]` 开头放行，无前缀的系统 / 玩家消息都挡；
 #     D5/D6 多前缀列表（逗号分隔，二批新增）：命中列表内任一前缀都放行，列表外的仍挡；
+#     D7/D8 前缀框右端展开图标 -> 多行编辑窗（2026-10-21）：换行写两个前缀，保存后合并成一行且两个都生效；
 #   F（只屏蔽指定前缀，二批新增）：`[mfblk]` 开头被挡，其余放行；F5 验证多前缀列表；
 #   E（恢复不过滤）：消息重新可见，前缀框内容保留。
 # 全程专用测试账号 TestMsgFilter，结束删除，不碰用户已有账号；只用 UIA + RCON，不抢前台焦点。
@@ -20,15 +21,6 @@ $script:TestPort = '25599'
 # autolib 默认测试玩家是 MccXBot，本脚本账号叫 TestMsgFilter；不改的话
 # RCON 的 tellraw / execute as 全部落空（与 g_walk / p_filter / g_view 同款处理）。
 $script:TestPlayer = $script:TestUser
-
-# ---------- 账号库操作（与 p_multi / p_filter / g_view / g_bow / g_walk 一致） ----------
-function Get-AccountListEl {
-    $l = Find-ById $script:AppRoot 'AccountList'
-    if (-not $l) { throw '找不到账号列表 AccountList' }
-    return $l
-}
-
-function Get-AccountCount { return @(Get-ListItems (Get-AccountListEl)).Count }
 
 function Find-EditByIdSafe {
     param([string]$Id)
@@ -106,14 +98,13 @@ function Test-LocalServerListening {
 }
 
 function Ensure-TestServer {
-    $dir = "$(Join-Path $PSScriptRoot '..\artifacts')\mcserver\1.21.11"
+    $dir = "$(Join-Path $PSScriptRoot '..\artifacts')\mcserver\26.1"
     if (-not (Test-Path (Join-Path $dir 'server.jar'))) { throw "本地测试服缺失: $dir" }
     if (Test-LocalServerListening) {
         Write-Host "  [srv] 本地测试服已在运行 127.0.0.1:$($script:TestPort)"
         return
     }
-    $java = (Get-Command java -ErrorAction SilentlyContinue).Source
-    if (-not $java) { throw 'java 不在 PATH，无法启动本地测试服' }
+    $java = Get-TestServerJava
     Start-Process -FilePath $java -ArgumentList '-Xmx1G', '-jar', 'server.jar', 'nogui' `
         -WorkingDirectory $dir -WindowStyle Hidden `
         -RedirectStandardOutput (Join-Path $dir 'test.out.log') `
@@ -208,13 +199,14 @@ try {
     $before = Get-AccountCount
 
     Add-TestAccount
-    Assert-True ((Get-AccountCount) -eq ($before + 1)) 'A1 测试账号已添加' "count=$(Get-AccountCount) before=$before"
+    $now = Wait-AccountCount -Expect ($before + 1) -TimeoutMs 10000
+    Assert-True ($now -eq ($before + 1)) 'A1 测试账号已添加' "count=$now before=$before"
 
     Select-TestAccount
 
     Clear-Log
     Invoke-UiButton '连接'
-    Assert-Log '连接成功' 'A2 本地测试服连接成功' 90000
+    Assert-Connected 'A2 本地测试服连接成功' 90000
     Assert-Log '已进入游戏' 'A3 进入游戏' 60000
     Start-Sleep -Seconds 2
 
@@ -238,12 +230,13 @@ try {
     Assert-LogAbsent 'mfblock_s1' 'B3 全屏蔽：系统消息不显示'
 
     # 只拦 Chat 频道：/help 输出走 Info 频道，必须照常显示（连接提示 / Bot 日志同理）
-    # /help 正文上百行，日志只留最近 60 条，行首的 "Available commands" 会滚出窗口；
-    # 断言改匹配输出的固定尾行 "For server help…"（它永远是最后一条）。
+    # /help 正文上百行，日志只留最近 60 条，行首的帮助标题会滚出窗口；
+    # 断言改匹配输出的固定尾行（它永远是最后一条）。尾行文案随 MCC 语言变：
+    # 2026-10-19 起 MCC 钉成官方简体中文（zh-Hans），所以匹配中英文都有的 '/send /help'。
     Send-MccCommand '/help'
     $b4ok = $false
     try {
-        Wait-LogContains 'For server help' 15000 | Out-Null
+        Wait-LogContains '/send /help' 15000 | Out-Null
         $b4ok = $true
     } catch {
         $b4ok = $false
@@ -253,7 +246,7 @@ try {
         $b4lines = @($b4txt -split "`r?`n")
         Write-Host ('  [dbg] B4 最近日志: ' + (($b4lines | Select-Object -Last 25) -join ' | '))
     }
-    Assert-True $b4ok 'B4 全屏蔽下非聊天日志（内部命令输出）照常显示' '(未匹配: For server help)'
+    Assert-True $b4ok 'B4 全屏蔽下非聊天日志（内部命令输出）照常显示' "(未匹配: '/send /help')"
 
     # ============ C. 只屏蔽玩家消息：挡 <名字>，放系统消息 ============
     Write-Host "`n=== C. 只屏蔽玩家消息 ==="
@@ -294,6 +287,27 @@ try {
 
     Send-Tellraw '[mfpre3] mflist_no2'
     Assert-LogAbsent 'mflist_no2' 'D6 列表外的前缀仍被挡'
+
+    # ---- D7/D8 展开图标 + 多行编辑窗（2026-10-21 需求） ----
+    # 前缀框右端的小展开图标 -> 多行编辑窗；多行保存时会合并成一行（单行框装不下换行），
+    # 合并后的文本仍按列表生效——第二个前缀也得放行。
+    Write-Host "`n=== D7 多行编辑窗 ==="
+    Invoke-UiButton '展开编辑服务器信息只显示前缀'
+    Start-Sleep -Milliseconds 1200
+    # 多行文本不能用 Set-UiValue：它写完会用 TextPattern 回读强校验，而多行框回读不带换行，
+    # 会被误判成"写入失败"。这里直接走 ValuePattern.SetValue。
+    $editor = Get-UiEdit '前缀编辑框'
+    $editor.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue("[mfpre]`r`n[mfpre4]")
+    Start-Sleep -Milliseconds 300
+    Invoke-UiButton '保存'
+    Start-Sleep -Milliseconds 1200
+
+    $merged = Get-UiText '服务器信息只显示前缀'
+    Write-Host "  合并后 = [$merged]"
+    Assert-True ($merged -notmatch "[`r`n]" -and $merged -match 'mfpre4') 'D7 多行保存后合并成一行、内容不丢' $merged
+
+    Send-Tellraw '[mfpre4] mfedit_s1'
+    Assert-Log 'mfedit_s1' 'D8 多行编辑窗里写的第二个前缀也放行' 15000
 
     # ============ F. 只屏蔽指定前缀：[mfblk] 挡，其余放行 ============
     Write-Host "`n=== F. 只屏蔽指定前缀 ==="
@@ -359,6 +373,10 @@ try {
         Write-Host ("  [clean] 删除测试账号失败: " + $_.Exception.Message)
     }
     $after = Get-AccountCount
+    if ($after -ne $before) {
+        # 删项后 ListView 重建期间 UIA 可能短暂少读一个 ListItem，等 UI 结算后重读一次
+        $after = Wait-AccountCount -Expect $before -TimeoutMs 10000
+    }
     Assert-True ($after -eq $before) 'X1 账号数已恢复（未污染用户账号库）' "after=$after before=$before"
 }
 

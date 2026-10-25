@@ -1,4 +1,6 @@
 ﻿# GUI 实测：2026-10-03 新增的「常用命令」按钮（手动添加 / 列表显示 / 删除）。
+# 2026-10-16：按钮和命令输入框都长在命令栏里，而命令栏改成"连上服务器才显示"——所以先连本地测试服
+#   （Enter-TestSession：起本地测试服 + 专用测试账号 MccXNewTest，结束删账号还原基线，不碰用户已有账号）。
 # 只看不改：测完把测试条目删掉，文件本来不存在就删文件，结束前收干净进程。
 # 用法：pwsh -ExecutionPolicy Bypass -File tests\cases\g_new.ps1
 $ErrorActionPreference = 'Continue'
@@ -31,7 +33,11 @@ $appRoot = Restart-App
 Start-Sleep -Seconds 3
 if (-not $script:AppRoot) { $script:AppRoot = $appRoot }
 
+$session = $null
 try {
+    Write-Host "`n=== 0) 连本地测试服（命令栏要连上之后才显示） ==="
+    $session = Enter-TestSession -User 'MccXNewTest'
+
     Write-Host "`n=== 1) 「常用命令」按钮 ==="
     $btn = $null
     try { $btn = Get-UiButton '常用命令' } catch { Write-Host ("  " + $_.Exception.Message) }
@@ -139,6 +145,7 @@ try {
 }
 finally {
     Write-Host "`n=== 收尾 ==="
+    try { Exit-TestSession -Session $session } catch { Write-Host ("  [clean] 收尾失败: " + $_.Exception.Message) }
     Stop-App
     # 测试数据不留痕：条目由上面的删除清掉；文件是这次测试新建的就整个删掉
     if (-not $hadFreqFile -and (Test-Path $freqPath)) {

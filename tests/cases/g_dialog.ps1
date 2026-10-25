@@ -18,17 +18,8 @@ $script:TestPort = '25599'
 # autolib 默认测试玩家是 MccXBot；本脚本账号叫 TestDialog，RCON 目标要跟着改
 $script:TestPlayer = $script:TestUser
 
-$script:ServerDir = "$(Join-Path $PSScriptRoot '..\artifacts')\mcserver\1.21.11"
+$script:ServerDir = "$(Join-Path $PSScriptRoot '..\artifacts')\mcserver\26.1"
 $script:DialogPackDir = Join-Path $script:ServerDir 'world\datapacks\mccx_dialog'
-
-# ---------- 账号库操作（与 p_multi / g_refill / g_bow 一致） ----------
-function Get-AccountListEl {
-    $l = Find-ById $script:AppRoot 'AccountList'
-    if (-not $l) { throw '找不到账号列表 AccountList' }
-    return $l
-}
-
-function Get-AccountCount { return @(Get-ListItems (Get-AccountListEl)).Count }
 
 function Find-EditByIdSafe {
     param([string]$Id)
@@ -181,8 +172,7 @@ function Test-DialogRegistered {
 }
 
 function Start-TestServerProcess {
-    $java = (Get-Command java -ErrorAction SilentlyContinue).Source
-    if (-not $java) { throw 'java 不在 PATH，无法启动本地测试服' }
+    $java = Get-TestServerJava
     Start-Process -FilePath $java -ArgumentList '-Xmx1G', '-jar', 'server.jar', 'nogui' `
         -WorkingDirectory $script:ServerDir -WindowStyle Hidden `
         -RedirectStandardOutput (Join-Path $script:ServerDir 'test.out.log') `
@@ -312,7 +302,8 @@ try {
     $before = Get-AccountCount
 
     Add-TestAccount
-    Assert-True ((Get-AccountCount) -eq ($before + 1)) 'A0 测试账号已添加' "count=$(Get-AccountCount) before=$before"
+    $now = Wait-AccountCount -Expect ($before + 1) -TimeoutMs 10000
+    Assert-True ($now -eq ($before + 1)) 'A0 测试账号已添加' "count=$now before=$before"
 
     Select-TestAccount
     Set-ToggleOn '自动重连' $true
@@ -320,7 +311,7 @@ try {
 
     Clear-Log
     Invoke-UiButton '连接'
-    Assert-Log '连接成功' 'A0c 本地测试服连接成功' 90000
+    Assert-Connected 'A0c 本地测试服连接成功' 90000
     Assert-Log '已进入游戏' 'A0d 进入游戏' 60000
     Start-Sleep -Seconds 2
 
@@ -329,7 +320,7 @@ try {
     Clear-Log
     Kick-TestPlayer
     Assert-Log '秒后自动重连' 'A1 未取消时踢下线触发自动重连' 60000
-    Assert-Log '连接成功' 'A2 自动重连成功' 120000
+    Assert-Connected 'A2 自动重连成功' 120000
     Assert-Log '已进入游戏' 'A3 重连后进入游戏' 60000
     Start-Sleep -Seconds 2
 
@@ -381,7 +372,7 @@ try {
     Write-Host "`n=== C. 点服务器动作 cancel：踢下线不再自动重连 ==="
     Clear-Log
     Invoke-UiButton '连接'
-    Assert-Log '连接成功' 'C0 手动重新连接' 90000
+    Assert-Connected 'C0 手动重新连接' 90000
     Assert-Log '已进入游戏' 'C0b 重新进入游戏' 60000
     Start-Sleep -Seconds 2
 
@@ -438,6 +429,10 @@ try {
         Write-Host ("  [clean] 删除测试账号失败: " + $_.Exception.Message)
     }
     $after = Get-AccountCount
+    if ($after -ne $before) {
+        # 删项后 ListView 重建期间 UIA 可能短暂少读一个 ListItem，等 UI 结算后重读一次
+        $after = Wait-AccountCount -Expect $before -TimeoutMs 10000
+    }
     Assert-True ($after -eq $before) 'X1 账号数已恢复（未污染用户账号库）' "after=$after before=$before"
 }
 

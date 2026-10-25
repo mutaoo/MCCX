@@ -14,15 +14,6 @@ $script:TestPort = '25599'
 # RCON 的 execute as <玩家> 全部落空（与 p_filter / g_view 同款处理）。
 $script:TestPlayer = $script:TestUser
 
-# ---------- 账号库操作（与 p_multi / p_filter / g_view 一致） ----------
-function Get-AccountListEl {
-    $l = Find-ById $script:AppRoot 'AccountList'
-    if (-not $l) { throw '找不到账号列表 AccountList' }
-    return $l
-}
-
-function Get-AccountCount { return @(Get-ListItems (Get-AccountListEl)).Count }
-
 function Find-EditByIdSafe {
     param([string]$Id)
     try { return Find-ById $script:AppRoot $Id } catch { return $null }
@@ -99,14 +90,13 @@ function Test-LocalServerListening {
 }
 
 function Ensure-TestServer {
-    $dir = "$(Join-Path $PSScriptRoot '..\artifacts')\mcserver\1.21.11"
+    $dir = "$(Join-Path $PSScriptRoot '..\artifacts')\mcserver\26.1"
     if (-not (Test-Path (Join-Path $dir 'server.jar'))) { throw "本地测试服缺失: $dir" }
     if (Test-LocalServerListening) {
         Write-Host "  [srv] 本地测试服已在运行 127.0.0.1:$($script:TestPort)"
         return
     }
-    $java = (Get-Command java -ErrorAction SilentlyContinue).Source
-    if (-not $java) { throw 'java 不在 PATH，无法启动本地测试服' }
+    $java = Get-TestServerJava
     Start-Process -FilePath $java -ArgumentList '-Xmx1G', '-jar', 'server.jar', 'nogui' `
         -WorkingDirectory $dir -WindowStyle Hidden `
         -RedirectStandardOutput (Join-Path $dir 'test.out.log') `
@@ -343,7 +333,8 @@ try {
     $before = Get-AccountCount
 
     Add-TestAccount
-    Assert-True ((Get-AccountCount) -eq ($before + 1)) 'A1 测试账号已添加' "count=$(Get-AccountCount) before=$before"
+    $now = Wait-AccountCount -Expect ($before + 1) -TimeoutMs 10000
+    Assert-True ($now -eq ($before + 1)) 'A1 测试账号已添加' "count=$now before=$before"
 
     Select-TestAccount
 
@@ -366,7 +357,7 @@ try {
 
     Clear-Log
     Invoke-UiButton '连接'
-    Assert-Log '连接成功' 'A4 本地测试服连接成功' 90000
+    Assert-Connected 'A4 本地测试服连接成功' 90000
     Assert-Log '已进入游戏' 'A5 进入游戏' 60000
     Start-Sleep -Seconds 5 # 等进服后的状态稳定（恢复窗口已移除，仅为落位/包稳定）
 
@@ -383,7 +374,11 @@ try {
     Assert-True ($hand -eq 'bow') 'B1 主手已持弓（服务端视角）' "hand=$hand"
 
     Clear-Arrows
-    Click-ViewButton '视角向东' # 朝东放箭：箭飞出去落地，不会落回脚下被捡走
+    # 朝东 + 抬头看天：平射的箭不到 1 秒就落地（东边是水时直接消失），而 Wait-Arrow 是
+    # 400ms 一次轮询 —— 撞不上就只能干等 25 秒（2026-10-18 实测 B5 偶发假红，同一次里
+    # C2 却过了，纯看轮询相位）。朝天打箭在空中约 6 秒，怎么轮询都抓得到。
+    Click-ViewButton '视角向东'
+    Click-ViewButton '视角抬头看天'
 
     Clear-Log
     Set-ToggleOn '鼠标控制' $true
@@ -431,6 +426,10 @@ try {
         Write-Host ("  [clean] 删除测试账号失败: " + $_.Exception.Message)
     }
     $after = Get-AccountCount
+    if ($after -ne $before) {
+        # 删项后 ListView 重建期间 UIA 可能短暂少读一个 ListItem，等 UI 结算后重读一次
+        $after = Wait-AccountCount -Expect $before -TimeoutMs 10000
+    }
     Assert-True ($after -eq $before) 'X1 账号数已恢复（未污染用户账号库）' "after=$after before=$before"
 }
 

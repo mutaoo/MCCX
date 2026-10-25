@@ -1037,13 +1037,9 @@ namespace MinecraftClient
                 {
                     SendText(text);
                 }
-                else if (text.Length > 2
-                    && Config.Main.Advanced.InternalCmdChar != MainConfigHelper.MainConfig.AdvancedConfig.InternalCmdCharType.none
-                    && text[0] == Config.Main.Advanced.InternalCmdChar.ToChar()
-                    && text[1] == '/')
-                {
-                    SendText(text[1..]);
-                }
+                // MCCX 2026-10-16: upstream had a "//xxx sends /xxx to the server" escape here.
+                // Removed on user request (the input placeholder dropped it too), so "//" input now
+                // behaves like vanilla: not an internal command, forwarded to the server as typed.
                 else if (text.Length > 0)
                 {
                     if (Config.Main.Advanced.InternalCmdChar == MainConfigHelper.MainConfig.AdvancedConfig.InternalCmdCharType.none
