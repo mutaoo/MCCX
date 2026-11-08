@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="..\build\Version.props" />
+
+  <PropertyGroup>
+    <!--
+      包根启动器：发布包里根目录只放它 + UserData\ + app\，真正的程序在 app\MCCX.exe。
+      它只做一件事——把参数转给 app\MCCX.exe 然后退出，不加载 WinUI。
+    -->
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <AssemblyName>MCCX</AssemblyName>
+    <RootNamespace>MCCX_Launcher</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <ApplicationIcon>..\MCCX.App\Assets\AppIcon.ico</ApplicationIcon>
+
+    <!-- 与主程序共用版本号（build\Version.props），包根 exe 的右键属性才是正确版本 -->
+    <Version>$(MccxVersion)</Version>
+    <InformationalVersion>$(MccxInformationalVersion)</InformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+
+    <!-- 根目录只留一个 exe：单文件（框架依赖）发布，不铺 dll / pdb -->
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>false</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+</Project>

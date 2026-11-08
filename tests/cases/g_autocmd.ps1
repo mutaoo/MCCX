@@ -1,6 +1,6 @@
 ﻿# 自动指令 e2e（2026-10-22 需求，第二轮补充）：
 #   卡片「自动指令」= 总开关 + 参数弹层；弹层里可以新建任意多条指令，
-#   每条自己的「间隔（秒）」「进服立即执行」「执行方式（循环/只执行一次）」「循环次数」「日志」相互独立。
+#   每条自己的「启用 / 停用」「间隔（秒）」「进服立即执行」「执行方式（循环/只执行一次）」「循环次数」「日志」相互独立。
 # 覆盖：
 #   A 新建账号 / 连接 / 弹层里新建两行并填参数（第 1 行勾进服立即执行，间隔 2 秒；
 #     第 2 行不勾，间隔 6 秒）；
@@ -8,7 +8,8 @@
 #   C 定时循环：第 1 行每 2 秒一条，7 秒窗口里至少两条；
 #   D 每条指令自己的日志开关：两行都关掉后不再产生「[自动指令]」过程日志，但指令照常发出
 #     （服务器回显仍在）；只把第 1 行打开，日志只恢复第 1 行的；
-#   E 落盘：重启程序后两条指令、间隔、进服立即执行、每条日志开关都还在；
+#     D4 每条自己的执行开关：关掉第 1 行后只有它停，其它指令照常；
+#   E 落盘：重启程序后两条指令、间隔、进服立即执行、每条执行开关、每条日志开关都还在；
 #   F 执行方式与次数 + MCC 内部命令：/send（MCC 内部命令，不是服务器指令）能执行；
 #     只执行一次的那条只发一遍；次数=2 的那条发两遍后停（日志里有「已执行完设置次数」）。
 # 用法：powershell -NoProfile -ExecutionPolicy Bypass -File tests\cases\g_autocmd.ps1
@@ -184,6 +185,7 @@ function Get-NamedElements {
 function Get-RowTexts { return (Get-NamedElements '自动指令文本' $script:CT::Edit) }
 function Get-RowIntervals { return (Get-NamedElements '自动指令间隔' $script:CT::Edit) }
 function Get-RowJoinToggles { return (Get-NamedElements '自动指令进服立即执行' $script:CT::Button) }
+function Get-RowEnabledToggles { return (Get-NamedElements '自动指令启用' $script:CT::Button) }
 function Get-RowLogToggles { return (Get-NamedElements '自动指令日志' $script:CT::Button) }
 function Get-RowModes { return (Get-NamedElements '自动指令方式' $script:CT::ComboBox) }
 function Get-RowCounts { return (Get-NamedElements '自动指令次数' $script:CT::Edit) }
@@ -349,6 +351,14 @@ try {
     $toggles = Get-RowJoinToggles
     $tp2 = $toggles[1].GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
     Assert-True ($tp2.Current.ToggleState -eq [System.Windows.Automation.ToggleState]::Off) 'A7 第 2 行默认不勾「进服立即执行」'
+
+    # 每条自己的执行开关（2026-10-31 需求）：新建的行默认都开着。
+    $enabledToggles = Get-RowEnabledToggles
+    Assert-True ($enabledToggles.Count -eq 2) 'A7b 每条指令各有一个自己的执行开关' "count=$($enabledToggles.Count)"
+    $en1 = $enabledToggles[0].GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
+    $en2 = $enabledToggles[1].GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
+    Assert-True ($en1.Current.ToggleState -eq [System.Windows.Automation.ToggleState]::On) 'A7c 第 1 行的执行开关默认打开'
+    Assert-True ($en2.Current.ToggleState -eq [System.Windows.Automation.ToggleState]::On) 'A7d 第 2 行的执行开关默认打开'
     Hide-AutoCmdPanel
 
     # 总开关：打开
@@ -399,6 +409,26 @@ try {
     Clear-Log
     Assert-Log '[自动指令]' 'D3 只把第 1 行的日志开关打开，过程日志就恢复' 20000
 
+    # ============ D4. 单条指令自己的执行开关 ============
+    Write-Host "`n=== D4. 单条指令自己的执行开关 ==="
+    Show-AutoCmdPanel
+    $enabledToggles = Get-RowEnabledToggles
+    Assert-True ($enabledToggles.Count -eq 2) 'D4 每条指令各有一个自己的执行开关' "count=$($enabledToggles.Count)"
+    Assert-True (Set-ToggleEl $enabledToggles[0] $false) 'D5 第 1 行的执行开关已关'
+    Hide-AutoCmdPanel
+    Clear-Log
+    Start-Sleep -Seconds 8
+    $txt = Get-RecentLogText
+    Assert-True ($txt -notmatch [regex]::Escape("TestAutoCmd $($script:Token1)")) 'D6 关掉执行开关的那条不再执行'
+    Assert-True ($txt -match [regex]::Escape("TestAutoCmd $($script:Token2)")) 'D7 其它指令照常执行'
+
+    Show-AutoCmdPanel
+    $enabledToggles = Get-RowEnabledToggles
+    Assert-True (Set-ToggleEl $enabledToggles[0] $true) 'D8 第 1 行的执行开关重新打开'
+    # 第 2 行先关掉，留给 E 验证"关闭状态也能落盘"
+    Assert-True (Set-ToggleEl $enabledToggles[1] $false) 'D9 第 2 行的执行开关已关（待重启验证落盘）'
+    Hide-AutoCmdPanel
+
     # ============ E. 落盘：重启后还在 ============
     Write-Host "`n=== E. 重启程序验证落盘 ==="
     Start-Sleep -Seconds 4
@@ -433,6 +463,15 @@ try {
     $lg2 = $logToggles[1].GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
     Assert-True ($lg1.Current.ToggleState -eq [System.Windows.Automation.ToggleState]::On) 'E8 第 1 行的日志开关（开）已落盘'
     Assert-True ($lg2.Current.ToggleState -eq [System.Windows.Automation.ToggleState]::Off) 'E9 第 2 行的日志开关（关）已落盘'
+
+    $enabledToggles = Get-RowEnabledToggles
+    Assert-True ($enabledToggles.Count -eq 2) 'E9b 重启后两条指令的执行开关都在' "count=$($enabledToggles.Count)"
+    $en1 = $enabledToggles[0].GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
+    $en2 = $enabledToggles[1].GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
+    Assert-True ($en1.Current.ToggleState -eq [System.Windows.Automation.ToggleState]::On) 'E9c 第 1 行的执行开关（开）已落盘'
+    Assert-True ($en2.Current.ToggleState -eq [System.Windows.Automation.ToggleState]::Off) 'E9d 第 2 行的执行开关（关）已落盘'
+    # 恢复第 2 行，后面的 F 不受影响
+    Assert-True (Set-ToggleEl $enabledToggles[1] $true) 'E9e 第 2 行的执行开关已恢复'
     Hide-AutoCmdPanel
 
     $mt = Get-UiToggle '自动指令'

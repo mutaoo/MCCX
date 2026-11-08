@@ -50,6 +50,22 @@ public interface IAccountSession : IDisposable
     event Action<int>? WindowClosed;
 
     /// <summary>
+    /// 玩家血量 / 饥饿值（都是 0-20）更新，2026-10-31 需求：状态区显示血量与饥饿。
+    /// <para>
+    /// 只在服务器发来 UpdateHealth 包（以及登录后补发的当前值）时触发；没收到过任何数据之前
+    /// 界面不应显示这两个数字（0/0 不代表真实状态）。断开后界面自己隐藏。
+    /// 可能从任意线程触发。
+    /// </para>
+    /// </summary>
+    event Action<float, int>? VitalsChanged;
+
+    /// <summary>
+    /// 自动重连从 SRV 记录解析出与账号里不同的端口（服务器换端口后自动跟随）。
+    /// 界面据此更新端口框并写回账号库。可能从任意线程触发。
+    /// </summary>
+    event Action<ushort>? ServerPortChanged;
+
+    /// <summary>
     /// 点容器窗口里的一个格子（或关掉窗口，<see cref="MccWindowAction.Close"/>）。
     /// 与对话框一样不走聊天/命令通道：这是协议层的窗口点击，不会进日志也不会被当成聊天发出去。
     /// 返回是否已投递。

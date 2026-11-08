@@ -1,5 +1,6 @@
 using MCCX.Core.Containers;
 using MCCX.Core.Dialogs;
+using MCCX.Core.Networking;
 using MinecraftClient;
 using MinecraftClient.Dialogs;
 using MinecraftClient.Protocol;
@@ -132,6 +133,13 @@ public sealed class MCCSession : IAccountSession
     private bool _userRequestedDisconnect;
 
     /// <summary>
+    /// 当前自动重连循环的取消源。关开关 / 点断开 / 退出时 <see cref="CancellationTokenSource.Cancel"/>
+    /// 会让等待中的间隔和**正在进行的连接尝试**（Ping、登录）立刻收手——
+    /// 否则"关掉开关"只会在两次尝试之间生效，用户会看到界面仍在连。
+    /// </summary>
+    private CancellationTokenSource? _reconnectCts;
+
+    /// <summary>
     /// 用户取消服务器对话框的时刻（关窗按钮/ESC，或点了服务器的“取消”类动作）。
     /// 窗口内的那次断开不自动重连：否则“取消 → 服务器踢人 → 自动重连 → 又弹框”会无限循环
     /// （现场实测每 ~30 秒一轮、计数永远显示第 1 次）。
@@ -140,6 +148,12 @@ public sealed class MCCSession : IAccountSession
 
     /// <summary>取消后多久内的断开算“用户不想连了”：覆盖服务器对话框超时（实测 ~30 秒）再留余量。</summary>
     private const long DialogCancelReconnectWindowMs = 60_000;
+
+    /// <summary>
+    /// 自动重连时重新查 SRV 的最小间隔。服务器换端口不是秒级事件，
+    /// 30 秒足够跟上，也不会让 3 秒一轮的重连把 DNS 查询打爆。
+    /// </summary>
+    private const long SrvRecheckIntervalMs = 30_000;
 
     /// <summary>本会话对应的账号 Id：视角 Bot 按账号认领，用它当键。</summary>
     private readonly string _accountId;
@@ -200,6 +214,18 @@ public sealed class MCCSession : IAccountSession
     public event Action<int>? DialogClosed;
 
     /// <summary>
+    /// 玩家血量 / 饥饿值（都是 0-20）更新（2026-10-31 需求）。
+    /// 可能从任意线程触发；没收到过 UpdateHealth 之前不会触发。
+    /// </summary>
+    public event Action<float, int>? VitalsChanged;
+
+    /// <summary>
+    /// 自动重连时从 SRV 记录重新解析出服务器端口、且与当前端口不同（2026-11-04 需求：
+    /// 服务器换端口后自动跟随）。界面据此更新端口框并写回账号库。可能从任意线程触发。
+    /// </summary>
+    public event Action<ushort>? ServerPortChanged;
+
+    /// <summary>
     /// 服务器命令列表（declare_commands / tab-complete 合并结果）发生变化。
     /// 载荷是根命令名列表（不含前导 '/'）。可能从任意线程触发。
     /// </summary>
@@ -216,6 +242,33 @@ public sealed class MCCSession : IAccountSession
 
     /// <summary>是否已完全进入游戏（可发聊天）。断开后自动回到 false。</summary>
     public bool IsGameJoined => _gameJoined;
+
+    /// <summary>
+    /// 把界面设置里的客户端标识映射成 MCC 的枚举
+    /// （<c>Settings.MainConfigHelper.MainConfig.AdvancedConfig.BrandInfoType</c>）。
+    /// </summary>
+    private static Settings.MainConfigHelper.MainConfig.AdvancedConfig.BrandInfoType ToBrandInfoType(string value) => value switch
+    {
+        UiSettingsStore.BrandInfoMcc => Settings.MainConfigHelper.MainConfig.AdvancedConfig.BrandInfoType.mcc,
+        UiSettingsStore.BrandInfoEmpty => Settings.MainConfigHelper.MainConfig.AdvancedConfig.BrandInfoType.empty,
+        _ => Settings.MainConfigHelper.MainConfig.AdvancedConfig.BrandInfoType.vanilla,
+    };
+
+    /// <summary>
+    /// 账号级客户端标识 → ui-settings.json 的字符串取值（MCC 只认 mcc/vanilla/empty 三种）。
+    /// <para>
+    /// <see cref="MCCConnectionOptions.BrandModeFollowGlobal"/> 直接读全局设置；
+    /// 其余值固定为该账号的选择，用于「这个服要 vanilla、那个服要看 MCC」的场景。
+    /// 越界值一律按跟随全局处理，老账号库（BrandMode 默认 0）行为不变。
+    /// </para>
+    /// </summary>
+    private static string ResolveBrandSetting(int brandMode) => brandMode switch
+    {
+        MCCConnectionOptions.BrandModeVanilla => UiSettingsStore.BrandInfoVanilla,
+        MCCConnectionOptions.BrandModeMcc => UiSettingsStore.BrandInfoMcc,
+        MCCConnectionOptions.BrandModeEmpty => UiSettingsStore.BrandInfoEmpty,
+        _ => UiSettingsStore.ReadBrandInfo(),
+    };
 
     /// <summary>
     /// 连接服务器（同步阻塞的 MCC 登录流程会在后台线程里跑完）。
@@ -284,9 +337,24 @@ public sealed class MCCSession : IAccountSession
             else
             {
                 LogUi("§8正在 Ping 服务器获取版本信息…");
-                bool pinged = await Task.Run(
-                    () => ProtocolHandler.GetServerInfo(host, options.Port, ref protocolVersion, ref forgeInfo),
-                    cancellationToken).ConfigureAwait(false);
+                // ref 参数不能跨线程共享：在闭包里用局部变量，成功后一次性取回。
+                // WaitAsync 让"关掉自动重连"不必等这次探测自己的 20 秒超时跑完。
+                (bool ok, int version, ForgeInfo? forge) ping = await Task.Run(
+                        () =>
+                        {
+                            int probedVersion = 0;
+                            ForgeInfo? probedForge = null;
+                            bool ok = ProtocolHandler.GetServerInfo(
+                                host, options.Port, ref probedVersion, ref probedForge);
+                            return (ok, probedVersion, probedForge);
+                        },
+                        cancellationToken)
+                    .WaitAsync(cancellationToken)
+                    .ConfigureAwait(false);
+
+                bool pinged = ping.ok;
+                protocolVersion = ping.version;
+                forgeInfo = ping.forge;
 
                 if (!pinged)
                 {
@@ -314,11 +382,24 @@ public sealed class MCCSession : IAccountSession
             Settings.Config.Logging.DebugMessages = debugMode;
             Settings.Config.Logging.PacketDebugMessages = debugMode;
 
+            // 客户端标识（2026-11-03）：mcip.mcyyy.com 的 Tardis 多版本层只给 brand=vanilla 的客户端
+            // 下发 ClientboundOpenScreenPacket，对 MCC 默认的 "Minecraft-Console-Client/版本" 只发
+            // Container Set Content —— MCC 会因为窗口还没打开而把内容丢掉，服务端界面就永远不显示，
+            // 而且服务端一直认为"界面开着"，后续指令全被拒。brand 在登录时发一次、由 McClient 读取，
+            // 所以必须在 new McClient 之前落好（和 DebugMessages 同理，对下一次（重）连生效）。
+            // 2026-11-05：改为按账号取值（跟随全局 / vanilla / mcc / empty），自动重连沿用同一份参数。
+            Settings.Config.Main.Advanced.BrandInfo = ToBrandInfoType(ResolveBrandSetting(options.BrandMode));
+
             SessionToken session = new()
             {
                 PlayerID = "0",
                 PlayerName = username,
             };
+
+            // 探测完再确认一次：用户可能刚好在这期间关掉了自动重连。
+            // 登录构造函数本身是同步阻塞的（MCC 内部线程），中途没法安全打断，
+            // 所以至少保证"还没开始登录"的尝试不再启动。
+            cancellationToken.ThrowIfCancellationRequested();
 
             // 3. 构造 McClient：构造函数会同步完成整个登录流程，必须放到后台线程
             string joinedMarker = BuildJoinedMarker();
@@ -334,6 +415,10 @@ public sealed class MCCSession : IAccountSession
                         try
                         {
                             client = new McClient(session, null, host, options.Port, protocolVersion, forgeInfo);
+
+                            // 血量/饥饿（2026-10-31）：订阅要在构造之后立刻挂上，
+                            // 登录完成后服务器可能马上发 UpdateHealth；晚挂会漏掉首包。
+                            client.HealthUpdated += OnClientHealthUpdated;
 
                             // 服务器信息过滤（2026-10-04）：把过滤器包在 MCC 日志器外面——
                             // 只有 Log.Chat（服务器聊天/系统消息，OnTextReceived 的唯一出口）会按
@@ -369,6 +454,9 @@ public sealed class MCCSession : IAccountSession
             if (client is null || !joined)
             {
                 // 失败原因 MCC 已经写进日志，这里只需要把状态收回去
+                if (client is not null)
+                    client.HealthUpdated -= OnClientHealthUpdated;
+
                 if (connectError is null)
                     LogUi("§c连接失败，未收到进入游戏的确认。");
                 SetState(MCCConnectionState.Disconnected);
@@ -389,6 +477,7 @@ public sealed class MCCSession : IAccountSession
             bool loaded = await Task.Run(() => LoadMonitorBot(client, monitor)).ConfigureAwait(false);
             if (!loaded)
             {
+                client.HealthUpdated -= OnClientHealthUpdated;
                 _client = null;
                 _monitor = null;
                 UnhookDialogs();
@@ -404,6 +493,11 @@ public sealed class MCCSession : IAccountSession
 
             LogUi("§a连接成功。");
             SetState(MCCConnectionState.Connected);
+
+            // 首包可能在订阅之前就到了（Constructor 同步登录）：有已知值就补发一次，
+            // 让界面在玩家还没掉血/吃饭时也能显示当前血量与饥饿。
+            if (client.HasHealthData)
+                VitalsChanged?.Invoke(client.GetHealth(), client.GetSaturation());
 
             // 按当前开关重新挂载自动化 Bot（首次连接与自动重连后都会执行）
             ApplyAutomation();
@@ -477,6 +571,8 @@ public sealed class MCCSession : IAccountSession
 
         if (cancelledReconnect)
         {
+            // 让正在等待/探测的那一轮也立刻收手（只改 _userRequestedDisconnect 要等它自己跑完）
+            CancelReconnectLoop();
             LogUi("§8已取消自动重连。");
             return;
         }
@@ -495,6 +591,8 @@ public sealed class MCCSession : IAccountSession
             }
             finally
             {
+                client.HealthUpdated -= OnClientHealthUpdated;
+
                 // 兜底：即使监视 Bot 没来得及上报，也必须回到 Disconnected
                 lock (_gate)
                 {
@@ -524,6 +622,7 @@ public sealed class MCCSession : IAccountSession
         _disposed = true;
         _backend.OutputReceived -= OnBackendOutput;
         MinecraftClient.ConsoleIO.ServerCommandsUpdated -= OnServerCommandsUpdated;
+        CancelReconnectLoop();
 
         McClient? client;
         lock (_gate)
@@ -536,6 +635,8 @@ public sealed class MCCSession : IAccountSession
 
         if (client is not null)
         {
+            client.HealthUpdated -= OnClientHealthUpdated;
+
             try
             {
                 client.Disconnect();
@@ -676,18 +777,20 @@ public sealed class MCCSession : IAccountSession
 
         bool changed;
         int count;
+        int enabledCount;
         lock (_gate)
         {
             changed = _autoCommandsEnabled != enabled;
             _autoCommandsEnabled = enabled;
             _autoCommands = [.. commands];
             count = _autoCommands.Count;
+            enabledCount = _autoCommands.Count(command => command.Enabled);
         }
 
         if (changed)
         {
             LogUi(enabled
-                ? $"§a自动指令已开启：{count} 条指令按各自间隔执行（进服立即执行的会先跑一次）。"
+                ? $"§a自动指令已开启：{count} 条指令（{enabledCount} 条启用）按各自间隔执行（进服立即执行的会先跑一次）。"
                 : "§8自动指令已关闭。");
         }
 
@@ -795,8 +898,34 @@ public sealed class MCCSession : IAccountSession
             _reconnectOptions = options;
         }
 
-        if (wasEnabled && !options.Enabled && wasPending)
-            LogUi("§e自动重连已关闭，正在进行的重连已停止。");
+        if (wasEnabled && !options.Enabled)
+        {
+            // 立刻打断正在进行的等待/连接尝试，而不是等这一轮自己跑完
+            CancelReconnectLoop();
+
+            if (wasPending)
+                LogUi("§e自动重连已关闭，正在中断当前连接尝试…");
+        }
+    }
+
+    /// <summary>取消当前自动重连循环（没有循环时静默返回）。可从任意线程调用。</summary>
+    private void CancelReconnectLoop()
+    {
+        CancellationTokenSource? cts;
+        lock (_gate)
+            cts = _reconnectCts;
+
+        if (cts is null)
+            return;
+
+        try
+        {
+            cts.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // 循环刚好自己结束并释放了取消源：没有可取消的东西
+        }
     }
 
     /// <summary>按当前开关同步自动化 Bot；未连接时只记状态，连接成功后会再执行一次。</summary>
@@ -1318,6 +1447,7 @@ public sealed class MCCSession : IAccountSession
     {
         MCCConnectionOptions? options;
         ReconnectOptions rc;
+        CancellationTokenSource cts;
 
         // 先单独判定“刚取消过对话框”：这笔日志必须在锁外打，LogReceived 的订阅方可能反过来拿锁
         bool suppressedByDialogCancel = false;
@@ -1356,9 +1486,12 @@ public sealed class MCCSession : IAccountSession
                 return;
 
             _reconnectPending = true;
+            // 上一轮如果刚好在收尾，它的取消源已经作废；这里换新的
+            _reconnectCts = new CancellationTokenSource();
+            cts = _reconnectCts;
         }
 
-        _ = Task.Run(() => RunReconnectLoopAsync(options, rc));
+        _ = Task.Run(() => RunReconnectLoopAsync(options, rc, cts));
     }
 
     /// <summary>
@@ -1367,9 +1500,18 @@ public sealed class MCCSession : IAccountSession
     /// （原实现只在进入循环前看一次 Enabled，关掉后仍会把 50 次试完）。
     /// <para><c>rc.MaxAttempts &lt;= 0</c> 表示无限重连：只由开关/断开/退出终止。</para>
     /// </summary>
-    private async Task RunReconnectLoopAsync(MCCConnectionOptions options, ReconnectOptions rc)
+    private async Task RunReconnectLoopAsync(
+        MCCConnectionOptions options,
+        ReconnectOptions rc,
+        CancellationTokenSource cts)
     {
+        CancellationToken token = cts.Token;
         string reason = "连接已断开";
+
+        // SRV 端口跟随（2026-11-04）：服务器换端口后，重连不能永远打账号里存的旧端口。
+        // 首次尝试就查一次，之后每 30 秒最多查一次，避免 3 秒一轮的重连把 DNS 打爆。
+        MCCConnectionOptions attemptOptions = options;
+        long? lastSrvCheck = null;
 
         try
         {
@@ -1387,12 +1529,24 @@ public sealed class MCCSession : IAccountSession
                 if (IsFeatureLogEnabled(FeatureLogKeys.Reconnect))
                     LogUi($"§e{reason}，{delay / 1000.0:0.#} 秒后自动重连（第 {attempt}/{limitText} 次）…");
 
-                await Task.Delay(delay).ConfigureAwait(false);
+                // 关开关时会取消 token：等待间隔和正在进行的探测都立即结束
+                await Task.Delay(delay, token).ConfigureAwait(false);
 
                 if (ReconnectShouldStop(out _))
                     return;
 
-                await ConnectAsyncCore(options, isAutoReconnect: true, CancellationToken.None)
+                if (lastSrvCheck is null
+                    || Environment.TickCount64 - lastSrvCheck.Value >= SrvRecheckIntervalMs)
+                {
+                    lastSrvCheck = Environment.TickCount64;
+                    if (await TryFollowSrvPortAsync(attemptOptions, token).ConfigureAwait(false) is { } followed)
+                        attemptOptions = followed;
+                }
+
+                if (ReconnectShouldStop(out _))
+                    return;
+
+                await ConnectAsyncCore(attemptOptions, isAutoReconnect: true, token)
                     .ConfigureAwait(false);
 
                 if (State == MCCConnectionState.Connected)
@@ -1413,16 +1567,33 @@ public sealed class MCCSession : IAccountSession
                 reason = "连接失败";
             }
         }
+        catch (OperationCanceledException)
+        {
+            // 关开关 / 断开 / 退出：正常收尾，不是错误
+        }
         catch (Exception ex)
         {
             LogUi($"§c自动重连出错：{ex.Message}");
         }
         finally
         {
+            bool replacedByNewerLoop;
+            bool logStopped;
             lock (_gate)
             {
                 _reconnectPending = false;
+                replacedByNewerLoop = !ReferenceEquals(_reconnectCts, cts);
+                if (!replacedByNewerLoop)
+                    _reconnectCts = null;
+
+                // 只有"开关被关掉"才补一句收尾（断开/退出已有自己的提示）
+                logStopped = !_disposed && !_userRequestedDisconnect && !_reconnectOptions.Enabled;
             }
+
+            cts.Dispose();
+
+            if (logStopped && !replacedByNewerLoop)
+                LogUi("§8自动重连已停止。");
         }
     }
 
@@ -1444,6 +1615,48 @@ public sealed class MCCSession : IAccountSession
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// 自动重连时按 SRV 记录重新解析端口。查到且与当前端口不同就返回一份换了端口的新参数，
+    /// 并通过 <see cref="ServerPortChanged"/> 通知界面写回账号库；查不到/相同返回 null（保持原样）。
+    /// <para>
+    /// 只影响自动重连，不改变手动连接"端口框优先、为空才查 SRV"的语义。
+    /// </para>
+    /// </summary>
+    private async Task<MCCConnectionOptions?> TryFollowSrvPortAsync(
+        MCCConnectionOptions options,
+        CancellationToken token)
+    {
+        ushort? srvPort;
+        try
+        {
+            srvPort = await ServerAddress.TrySrvPortAsync(options.ServerHost, token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            // 查询失败就当没有 SRV，沿用原端口
+            return null;
+        }
+
+        if (srvPort is not { } port || port == options.Port)
+            return null;
+
+        LogUi($"§e检测到服务器 SRV 端口 {port}（账号里是 {options.Port}），本次重连自动跟随。");
+        ServerPortChanged?.Invoke(port);
+
+        return new MCCConnectionOptions
+        {
+            ServerHost = options.ServerHost,
+            Port = port,
+            Username = options.Username,
+            MinecraftVersion = options.MinecraftVersion,
+            BrandMode = options.BrandMode,
+        };
     }
 
     #endregion
@@ -1796,12 +2009,14 @@ public sealed class MCCSession : IAccountSession
 
     private void OnMonitorDisconnected(ChatBot.DisconnectReason reason, string message)
     {
+        McClient? client;
         lock (_gate)
         {
             // MCC 断线可能被多次回调，只处理第一次，避免重复日志与重复重连调度
             if (_state == MCCConnectionState.Disconnected)
                 return;
 
+            client = _client;
             _client = null;
             _monitor = null;
             _gameJoined = false;
@@ -1814,6 +2029,9 @@ public sealed class MCCSession : IAccountSession
             _autoCommandBot = null;
             UnhookDialogs();
         }
+
+        if (client is not null)
+            client.HealthUpdated -= OnClientHealthUpdated;
 
         string detail = string.IsNullOrWhiteSpace(message) ? reason.ToString() : message;
         LogUi($"§8连接已断开（{detail}）。");
@@ -1844,6 +2062,9 @@ public sealed class MCCSession : IAccountSession
         Task loadTask = Task.Run(() => client.BotLoad(monitor));
         return loadTask.Wait(BotLoadTimeoutMs);
     }
+
+    /// <summary>MCC 网络线程：血量/饥饿变化，原样转给界面（订阅方负责切 UI 线程）。</summary>
+    private void OnClientHealthUpdated(float health, int food) => VitalsChanged?.Invoke(health, food);
 
     private void OnBackendOutput(string text)
     {

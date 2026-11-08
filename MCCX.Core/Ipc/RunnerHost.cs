@@ -126,6 +126,10 @@ public static class RunnerHost
             session.WindowClosed += windowId => writer.Emit(RunnerMessage.EvtWindowEnd, windowId.ToString());
             session.ServerCommandsChanged += commands =>
                 writer.Emit(RunnerMessage.EvtCommands, System.Text.Json.JsonSerializer.Serialize(commands));
+            session.VitalsChanged += (health, food) =>
+                writer.Emit(RunnerMessage.EvtVitals, new VitalsInfo { Health = health, Food = food }.ToJson());
+            session.ServerPortChanged += port =>
+                writer.Emit(RunnerMessage.EvtServerPort, port.ToString(CultureInfo.InvariantCulture));
         }
         catch (Exception ex)
         {
@@ -206,6 +210,7 @@ public static class RunnerHost
                     Port = (ushort)Math.Clamp(message.Port, 0, ushort.MaxValue),
                     Username = message.User ?? string.Empty,
                     MinecraftVersion = string.IsNullOrWhiteSpace(message.Version) ? "auto" : message.Version!,
+                    BrandMode = message.Brand,
                 });
                 break;
 

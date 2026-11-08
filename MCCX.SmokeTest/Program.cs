@@ -1,6 +1,8 @@
 using System.Diagnostics;
+using System.Reflection;
 using System.Text;
 using MCCX.Core;
+using MCCX.Core.Dialogs;
 using MCCX.Core.Ipc;
 using MCCX.Core.Networking;
 
@@ -9,13 +11,25 @@ using MCCX.Core.Networking;
 //   2) MCC 连服链路自测  : dotnet run --project MCCX.SmokeTest -- [host] [port] [version]
 //   例                   : dotnet run --project MCCX.SmokeTest -- 127.0.0.1 25565 auto
 //   3) 端口解析自测      : dotnet run --project MCCX.SmokeTest -- --port [srv <域名>]
+//   3b) 重连 SRV 跟随    : dotnet run --project MCCX.SmokeTest -- --srvfollow <域名> [旧端口]
+//   3c) 客户端标识映射    : dotnet run --project MCCX.SmokeTest -- --brand
 //   4) 多开子进程自测    : dotnet run --project MCCX.SmokeTest -- --runner <MCCX.exe 路径> [host] [port]
+//   5) 自动登录取值规则  : dotnet run --project MCCX.SmokeTest -- --dialog
 
 if (args.Length > 0 && args[0] == "--accounts")
     return RunAccountStoreTest();
 
+if (args.Length > 0 && args[0] == "--dialog")
+    return RunDialogAutoLoginTest();
+
 if (args.Length > 0 && args[0] == "--port")
     return await RunPortResolveTest(args.AsSpan(1).ToArray());
+
+if (args.Length > 0 && args[0] == "--srvfollow")
+    return await RunSrvFollowTest(args.AsSpan(1).ToArray());
+
+if (args.Length > 0 && args[0] == "--brand")
+    return RunBrandModeTest();
 
 if (args.Length > 0 && args[0] == "--runner")
     return await RunRunnerProcessTest(args.AsSpan(1).ToArray());
@@ -102,6 +116,80 @@ if (session.State != MCCConnectionState.Disconnected)
 
 Console.WriteLine("[TEST] PASS");
 return 0;
+
+// 自动登录取值规则自测（2026-11-01）：服务端对话框 → "密码填记住的、其它填初始状态、点第一个非取消动作"。
+// 这套规则界面弹窗与后台（账号没打开）自动登录共用（MCCX.Core.Dialogs.DialogAutoLogin），这里不需要服务器。
+static int RunDialogAutoLoginTest()
+{
+    int failures = 0;
+
+    void Check(string name, bool ok, string detail = "")
+    {
+        Console.WriteLine($"[{(ok ? "PASS" : "FAIL")}] {name}{(detail.Length > 0 ? " — " + detail : "")}");
+        if (!ok)
+            failures++;
+    }
+
+    MccDialogInfo passwordOnly = new()
+    {
+        Revision = 3,
+        Title = "请输入密码",
+        Inputs = [new MccDialogField { Key = "password", Kind = MccDialogKind.Text, IsSecret = true }],
+        Actions =
+        [
+            new MccDialogAction { Index = 1, Label = "登录" },
+            new MccDialogAction { Index = 2, Label = "取消", IsCancel = true },
+        ],
+    };
+
+    Check("只有密码框：登录动作取第一个非取消（1）", DialogAutoLogin.FindLoginActionIndex(passwordOnly) == 1);
+
+    Dictionary<string, string>? values = DialogAutoLogin.TryBuildValues(passwordOnly, "s3cret");
+    Check("密码项用记住的值",
+        values is { Count: 1 } && values["password"] == "s3cret",
+        values is null ? "values=null" : string.Join(",", values.Select(p => $"{p.Key}={p.Value}")));
+
+    MccDialogInfo mixed = new()
+    {
+        Inputs =
+        [
+            new MccDialogField { Key = "password", Kind = MccDialogKind.Text, IsSecret = true },
+            new MccDialogField { Key = "remember", Kind = MccDialogKind.Boolean, InitialValue = "true" },
+            new MccDialogField { Key = "region", Kind = MccDialogKind.Option, InitialValue = "", Options = ["a", "b"] },
+            new MccDialogField { Key = "nick", Kind = MccDialogKind.Text, InitialValue = "steve" },
+        ],
+    };
+
+    values = DialogAutoLogin.TryBuildValues(mixed, "pw");
+    Check("布尔 / 下拉 / 文本按初始状态",
+        values is not null && values["password"] == "pw" && values["remember"] == "true"
+            && values["region"] == "a" && values["nick"] == "steve",
+        values is null ? "values=null" : string.Join(",", values.Select(p => $"{p.Key}={p.Value}")));
+
+    MccDialogInfo captcha = new()
+    {
+        Inputs =
+        [
+            new MccDialogField { Key = "password", Kind = MccDialogKind.Text, IsSecret = true },
+            new MccDialogField { Key = "captcha", Kind = MccDialogKind.Text, InitialValue = "" },
+        ],
+    };
+    Check("除密码外还有空文本项（验证码）→ 不给取值（留给用户填）",
+        DialogAutoLogin.TryBuildValues(captcha, "pw") is null);
+
+    MccDialogInfo cancelFirst = new()
+    {
+        Actions =
+        [
+            new MccDialogAction { Index = 1, Label = "取消", IsCancel = true },
+            new MccDialogAction { Index = 2, Label = "登录" },
+        ],
+    };
+    Check("取消动作在前时仍取 2", DialogAutoLogin.FindLoginActionIndex(cancelFirst) == 2);
+
+    Console.WriteLine(failures == 0 ? "[TEST] PASS" : $"[TEST] FAIL: {failures} 项");
+    return failures == 0 ? 0 : 1;
+}
 
 // 账号加密持久化自测：落盘 → 重开（模拟重启）→ 解密还原 → 合并/删除 → 密文不含明文 → 篡改容错。
 static int RunAccountStoreTest()
@@ -378,6 +466,122 @@ static async Task<int> RunPortResolveTest(string[] rest)
 
     Console.WriteLine("[TEST] port PASS");
     return 0;
+}
+
+// 客户端标识（2026-11-05）：账号级 0..3 → ui-settings 字符串；IPC 的 brand 字段；账号库拷贝。
+//   用法: dotnet run --project MCCX.SmokeTest -- --brand
+static int RunBrandModeTest()
+{
+    int failures = 0;
+
+    void Check(string name, bool ok, string actual, string expected)
+    {
+        Console.WriteLine($"[TEST] {name} => {actual} {(ok ? "OK" : $"FAIL 期望 {expected}")}");
+        if (!ok)
+            failures++;
+    }
+
+    MCCRuntime.Initialize();
+
+    MethodInfo? resolve = typeof(MCCSession).GetMethod(
+        "ResolveBrandSetting", BindingFlags.Static | BindingFlags.NonPublic);
+    if (resolve is null)
+    {
+        Console.WriteLine("[TEST] FAIL: 找不到 ResolveBrandSetting");
+        return 21;
+    }
+
+    string Resolve(int mode) => (string)resolve.Invoke(null, [mode])!;
+    string global = UiSettingsStore.ReadBrandInfo();
+
+    Check("brand 0 = 跟随全局", Resolve(MCCConnectionOptions.BrandModeFollowGlobal) == global,
+        Resolve(0), global);
+    Check("brand 1 = vanilla", Resolve(MCCConnectionOptions.BrandModeVanilla) == UiSettingsStore.BrandInfoVanilla,
+        Resolve(1), UiSettingsStore.BrandInfoVanilla);
+    Check("brand 2 = mcc", Resolve(MCCConnectionOptions.BrandModeMcc) == UiSettingsStore.BrandInfoMcc,
+        Resolve(2), UiSettingsStore.BrandInfoMcc);
+    Check("brand 3 = empty", Resolve(MCCConnectionOptions.BrandModeEmpty) == UiSettingsStore.BrandInfoEmpty,
+        Resolve(3), UiSettingsStore.BrandInfoEmpty);
+    Check("brand 越界按跟随全局", Resolve(99) == global, Resolve(99), global);
+
+    // IPC connect 命令必须把 brand 一起带过去，否则子进程会退回“跟随全局”
+    RunnerMessage original = new()
+    {
+        Type = RunnerMessage.CmdConnect,
+        Host = "example.com",
+        Port = 25565,
+        User = "u",
+        Version = "auto",
+        Brand = MCCConnectionOptions.BrandModeMcc,
+    };
+    RunnerMessage? parsed = RunnerMessage.Parse(original.ToJson());
+    Check("IPC brand 往返", parsed is not null && parsed.Brand == MCCConnectionOptions.BrandModeMcc,
+        parsed?.Brand.ToString() ?? "null", MCCConnectionOptions.BrandModeMcc.ToString());
+
+    // 账号库整体拷贝不能漏掉新字段（漏了就是“改了不落盘”）
+    AccountProfile source = new() { BrandMode = MCCConnectionOptions.BrandModeEmpty };
+    AccountProfile target = new();
+    target.CopyFrom(source);
+    Check("CopyFrom BrandMode", target.BrandMode == MCCConnectionOptions.BrandModeEmpty,
+        target.BrandMode.ToString(), MCCConnectionOptions.BrandModeEmpty.ToString());
+
+    Console.WriteLine(failures == 0 ? "[TEST] brand PASS" : $"[TEST] brand FAIL ({failures})");
+    return failures == 0 ? 0 : 1;
+}
+
+// 自动重连 SRV 跟随自测：用一个与 SRV 不同的端口当"账号里存的旧端口"，
+// 验证会话会解析出 SRV 端口、返回新参数并触发 ServerPortChanged。
+//   用法: dotnet run --project MCCX.SmokeTest -- --srvfollow <域名> [旧端口]
+static async Task<int> RunSrvFollowTest(string[] rest)
+{
+    string host = rest.Length > 0 ? rest[0] : "1.mcyyy.com";
+    ushort storedPort = rest.Length > 1 && ushort.TryParse(rest[1], out ushort p) ? p : (ushort)25565;
+
+    MCCRuntime.Initialize();
+    using MCCSession session = new();
+
+    ushort? notified = null;
+    session.ServerPortChanged += port => notified = port;
+
+    MCCConnectionOptions options = new()
+    {
+        ServerHost = host,
+        Port = storedPort,
+        Username = "MCCXBot",
+    };
+
+    MethodInfo? method = typeof(MCCSession).GetMethod(
+        "TryFollowSrvPortAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+    if (method is null)
+    {
+        Console.WriteLine("[TEST] FAIL: 找不到 TryFollowSrvPortAsync");
+        return 21;
+    }
+
+    Task<MCCConnectionOptions?> task = (Task<MCCConnectionOptions?>)method.Invoke(
+        session, [options, CancellationToken.None])!;
+    MCCConnectionOptions? followed = await task;
+
+    ushort? expected = await ServerAddress.TrySrvPortAsync(host);
+    Console.WriteLine($"[TEST] 账号端口={storedPort}, SRV={(expected is null ? "无记录" : expected.ToString())}, " +
+                      $"跟随结果={(followed is null ? "不变" : followed.Port.ToString())}, 事件={(notified is null ? "未触发" : notified.ToString())}");
+
+    bool ok = expected is null
+        ? followed is null && notified is null
+        : followed is not null && followed.Port == expected.Value && notified == expected.Value;
+
+    // IPC 侧：子进程发 serverport 事件，父进程代理必须能解析并抛给界面层
+    using RunnerProcess runner = new(Environment.ProcessPath!);
+    ushort? ipcPort = null;
+    runner.ServerPortChanged += port => ipcPort = port;
+    MethodInfo? dispatch = typeof(RunnerProcess).GetMethod("Dispatch", BindingFlags.Instance | BindingFlags.NonPublic);
+    dispatch?.Invoke(runner, ["{\"t\":\"serverport\",\"v\":\"25566\"}"]);
+    bool ipcOk = ipcPort == 25566;
+    Console.WriteLine($"[TEST] IPC serverport => {(ipcPort is null ? "未触发" : ipcPort.ToString())} {(ipcOk ? "OK" : "FAIL 期望 25566")}");
+    ok &= ipcOk;
+
+    Console.WriteLine(ok ? "[TEST] srvfollow PASS" : "[TEST] srvfollow FAIL");
+    return ok ? 0 : 1;
 }
 
 // 多开子进程链路自测：主进程（本测试）当“界面”，用 RunnerProcess 拉起 MCCX.exe --runner，

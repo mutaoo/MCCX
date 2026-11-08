@@ -3,9 +3,12 @@ using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Text;
 using System.Text.RegularExpressions;
+using MCCX_App.Containers;
+using MCCX_App.Logging;
 using MCCX_App.ViewModels;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Documents;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Windows.Foundation;
@@ -39,6 +42,9 @@ namespace MCCX_App;
 //   ⑥ 贴底跟随 + 选区暂停跟随；
 //   ⑦ UIA 链路：LogScrollHost 的 ScrollPattern、行 Edit 的 ValuePattern、LogBox 的
 //      TextPattern 选区，全部保留。
+//   ⑧ 彩色文字（2026-10-31）：行模板三层的中间层 LogLineText（TextBlock + Inlines）按服务器
+//      推来的 § 颜色码分段上色；LogLineBox 只留布局/几何/UIA，整块 Opacity=0（只设透明前景
+//      会留一层灰白残影，暗色下看着像重阴影）。解析见 Logging/LogLineFormat.cs。
 // ============================================================================
 
 public sealed partial class MainPage
@@ -50,6 +56,9 @@ public sealed partial class MainPage
 
     private ScrollViewer? _logScrollViewer;
     private bool _logScrollPending;
+
+    /// <summary>独立日志滚动条与 LogScrollHost 双向同步时防止回环。</summary>
+    private bool _logScrollBarSyncing;
 
     /// <summary>用户正在翻历史：期间新日志不再把视图拽到底部。</summary>
     private bool _logFollowPaused;
@@ -176,6 +185,17 @@ public sealed partial class MainPage
             : string.Empty;
     }
 
+    /// <summary>取可见列表里第 index 行的条目（彩色分段要从它拿 Raw）。</summary>
+    private LogEntry? GetLogEntry(int index)
+    {
+        if (_logFilterMode)
+            return index >= 0 && index < _filteredLogs.Count ? _filteredLogs[index] : null;
+
+        return _hookedLogs is { } logs && index >= 0 && index < logs.Count
+            ? logs[index]
+            : null;
+    }
+
     /// <summary>日志区的 ScrollViewer 只有模板套用后才有，这里挂上 ViewChanged 并准备键盘处理。</summary>
     private void LogScrollHost_Loaded(object sender, RoutedEventArgs e)
     {
@@ -200,18 +220,99 @@ public sealed partial class MainPage
         LogRepeater.LayoutUpdated -= LogLayoutUpdated;
         LogRepeater.LayoutUpdated += LogLayoutUpdated;
 
-        // 行被实体化（滚动进出视口、换源重建）时重画它的下划线与选区
+        // 行被实体化（滚动进出视口、换源重建）时重建彩色文字、重画下划线与选区
         LogRepeater.ElementPrepared += OnLogElementPrepared;
         LogRepeater.ElementClearing += OnLogElementClearing;
 
+        // 主题在运行时可切（设置里那个开关）：浅色主题会过滤掉看不清的 MC 颜色，
+        // 所以换主题要把已实体行的彩色文字整层重建一遍（不只是重画覆盖层）。
+        ActualThemeChanged -= OnLogPageThemeChanged;
+        ActualThemeChanged += OnLogPageThemeChanged;
+
         // 首次布局可能早于这里（ItemsSource 在构造函数里就设好了），补画一遍初始可见行
         RedrawAllLogRows();
+
+        UpdateLogScrollBarInsets();
+        if (_logScrollViewer is { } scrollHost)
+            SyncLogScrollBar(scrollHost);
 
         ForceScrollLogToEnd();
     }
 
     /// <summary>取日志区的滚动宿主：只认 XAML 里显式写出来的 LogScrollHost。</summary>
     private ScrollViewer? ResolveLogScrollHost() => LogScrollHost;
+
+    /// <summary>
+    /// 日志滚动条上下边距（2026-10-31 用户要求：滚动条只在状态卡片和搜索框之间显示）。
+    /// 状态卡片 / 搜索框的实际高度随主题字体和连接状态变化，所以按实际尺寸算；
+    /// 首帧还没量到尺寸时（ActualHeight=0）用 48 兜底，等 SizeChanged 再纠正。
+    /// 断开后搜索框会展开到整条命令区（2026-11-06），不再压着日志区右边，
+    /// 所以下边距回到 0；连上时仍按右下角搜索框的高度让开。
+    /// </summary>
+    private void UpdateLogScrollBarInsets()
+    {
+        double top = ConnectionStatusBadge.ActualHeight > 0 ? ConnectionStatusBadge.ActualHeight + 4 : 48;
+        double bottom = ViewModel.IsConnected && LogSearchHost.ActualHeight > 0
+            ? LogSearchHost.ActualHeight + 4
+            : 0;
+
+        LogScrollBarOverlay.Margin = new Thickness(0, top, 0, bottom);
+    }
+
+    private void LogOverlayChrome_SizeChanged(object sender, SizeChangedEventArgs e) => UpdateLogScrollBarInsets();
+
+    /// <summary>
+    /// 把 LogScrollHost 的滚动状态同步到右侧那条独立 ScrollBar。
+    /// 原生滚动条已设为 Hidden（滚轮 / 键盘 / UIA ScrollPattern 不受影响），
+    /// 这样它不再从状态卡片和搜索框底下穿过。
+    /// </summary>
+    private void SyncLogScrollBar(ScrollViewer scroll)
+    {
+        if (LogScrollBarOverlay is null)
+            return;
+
+        double maximum = Math.Max(0, scroll.ScrollableHeight);
+        double viewport = Math.Max(0, scroll.ViewportHeight);
+        double value = Math.Clamp(scroll.VerticalOffset, 0, maximum);
+
+        _logScrollBarSyncing = true;
+        try
+        {
+            if (Math.Abs(LogScrollBarOverlay.Maximum - maximum) > 0.01)
+                LogScrollBarOverlay.Maximum = maximum;
+
+            if (Math.Abs(LogScrollBarOverlay.ViewportSize - viewport) > 0.01)
+                LogScrollBarOverlay.ViewportSize = viewport;
+
+            if (Math.Abs(LogScrollBarOverlay.Value - value) > 0.01)
+                LogScrollBarOverlay.Value = value;
+
+            Visibility wanted = maximum > 0.5 ? Visibility.Visible : Visibility.Collapsed;
+            if (LogScrollBarOverlay.Visibility != wanted)
+                LogScrollBarOverlay.Visibility = wanted;
+        }
+        finally
+        {
+            _logScrollBarSyncing = false;
+        }
+    }
+
+    /// <summary>拖动右侧独立滚动条：反向滚动 LogScrollHost（拖拽也算用户主动翻历史）。</summary>
+    private void LogScrollBarOverlay_ValueChanged(object sender, Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
+    {
+        if (_logScrollBarSyncing)
+            return;
+
+        _logScrollViewer ??= ResolveLogScrollHost();
+        if (_logScrollViewer is not { } scroll)
+            return;
+
+        if (Math.Abs(scroll.VerticalOffset - e.NewValue) < 0.5)
+            return;
+
+        MarkLogUserScroll();
+        ScrollLogTo(scroll, e.NewValue);
+    }
 
     // ===================== 集合变化 =====================
 
@@ -373,6 +474,10 @@ public sealed partial class MainPage
     /// <summary>版面变化的兜底：窗口宽度变了要重新折行、列表换源也会改行数，这些都不走 CollectionChanged。</summary>
     private void LogLayoutUpdated(object? sender, object e)
     {
+        _logScrollViewer ??= ResolveLogScrollHost();
+        if (_logScrollViewer is { } layoutScroll)
+            SyncLogScrollBar(layoutScroll);
+
         if (_logFollowPaused)
             return;
 
@@ -452,6 +557,8 @@ public sealed partial class MainPage
             _logFollowPaused = false;
         else if (ShouldPauseLogFollow(scroll, end))
             _logFollowPaused = true;
+
+        SyncLogScrollBar(scroll);
     }
 
     /// <summary>用户主动滚动（滚轮 / 在滚动条上按下 / 触摸拖动 / 翻页键）：记一笔时刻。</summary>
@@ -492,6 +599,7 @@ public sealed partial class MainPage
         if (args.Element is Grid grid)
         {
             ApplyLogRowWidth(grid);
+            RebuildLogRowText(grid);
             RedrawLogRow(grid);
         }
     }
@@ -522,6 +630,14 @@ public sealed partial class MainPage
 
         if (double.IsNaN(box.Width) || Math.Abs(box.Width - width) > 0.5)
             box.Width = width;
+
+        // 彩色文字那层（LogLineText）必须和 TextBox 同宽：它才是真正被看到的字，
+        // 宽度差一点就会和 TextBox 的折行位置错开，选区/下划线立刻歪掉。
+        if (root.Children.Count >= 2 && root.Children[1] is TextBlock text
+            && (double.IsNaN(text.Width) || Math.Abs(text.Width - width) > 0.5))
+        {
+            text.Width = width;
+        }
     }
 
     /// <summary>日志区视口宽度变了（窗口拉宽/变窄、命令行收起等）：所有已实体行的宽度重钉一遍。</summary>
@@ -533,13 +649,112 @@ public sealed partial class MainPage
             if (VisualTreeHelper.GetChild(LogRepeater, i) is Grid grid)
                 ApplyLogRowWidth(grid);
         }
+
+        UpdateLogScrollBarInsets();
+        if (sender is ScrollViewer scroll)
+            SyncLogScrollBar(scroll);
     }
 
     private void OnLogElementClearing(ItemsRepeater sender, ItemsRepeaterElementClearingEventArgs args)
     {
-        // 容器要被回收：清掉它身上残留的选区高亮/下划线，免得复用给别人时闪一下。
-        if (args.Element is Grid grid && grid.Children.Count >= 2 && grid.Children[1] is Canvas layer)
+        // 容器要被回收：清掉它身上残留的选区高亮/下划线，免得复用给别人时闪一下；
+        // 彩色文字的 Inlines 也清掉，别让被回收的行继续挂着一串 Run。
+        if (args.Element is Grid grid && grid.Children.Count >= 3 && grid.Children[2] is Canvas layer)
             layer.Children.Clear();
+
+        if (args.Element is Grid root && root.Children.Count >= 2 && root.Children[1] is TextBlock text)
+            text.Inlines.Clear();
+    }
+
+    // ===================== 彩色文字层（2026-10-31） =====================
+
+    /// <summary>
+    /// § 颜色码调色板里那 16 种颜色对应的画刷。日志行是虚拟化的，滚动时同一行会被反复
+    /// 准备/回收，每段都 new 一个 SolidColorBrush 会白白制造垃圾；颜色只有十几种，缓存住。
+    /// </summary>
+    private readonly Dictionary<uint, SolidColorBrush> _logRunBrushes = [];
+
+    /// <summary>
+    /// 把一行的纯文本按服务器推送的 § 颜色码重建成彩色 Inlines（画在 LogLineText 上）。
+    ///
+    /// <para>
+    /// LogLineBox（TextBox）的文字是透明的，只负责布局/UIA/字符几何；这层才是用户看到的字。
+    /// 分段拼起来必须和 <c>box.Text</c> 前缀逐字符一致，否则两层会错位——不一致（比如以后
+    /// 有人改了 Text 的生成方式）就退回整行单色，宁可没颜色也不能歪。
+    /// </para>
+    ///
+    /// <para>
+    /// 重复合并的 “ xN” 后缀不在 Raw 里，按默认前景色补在最后。
+    /// 浅色主题下与容器面板同一策略：MC 的浅色（白/黄等）看不清时退回主题文字色。
+    /// </para>
+    /// </summary>
+    private void RebuildLogRowText(Grid root)
+    {
+        if (root.Children.Count < 2 || root.Children[0] is not TextBox box || root.Children[1] is not TextBlock block)
+            return;
+
+        string text = box.Text ?? string.Empty;
+        block.Inlines.Clear();
+        if (text.Length == 0)
+            return;
+
+        int index = LogRepeater.GetElementIndex(root);
+        IReadOnlyList<LogRun> runs =
+            (root.DataContext as LogEntry ?? GetLogEntry(index))?.ColoredRuns ?? [];
+
+        int pos = 0;
+        bool aligned = runs.Count > 0;
+        foreach (LogRun run in runs)
+        {
+            if (pos + run.Text.Length > text.Length
+                || string.CompareOrdinal(text, pos, run.Text, 0, run.Text.Length) != 0)
+            {
+                aligned = false;
+                break;
+            }
+
+            pos += run.Text.Length;
+        }
+
+        if (!aligned)
+        {
+            // 对不上：整行单色，绝不让彩色层和 TextBox 的字符下标错开。
+            block.Inlines.Add(new Run { Text = text });
+            return;
+        }
+
+        bool dark = ActualTheme == ElementTheme.Dark;
+        foreach (LogRun run in runs)
+        {
+            var line = new Run { Text = run.Text };
+
+            if (run.Foreground is { } color
+                && (dark || MccTextStyle.IsReadableOnLightBackground(color)))
+            {
+                line.Foreground = GetLogRunBrush(color);
+            }
+
+            if (run.Bold)
+                line.FontWeight = Microsoft.UI.Text.FontWeights.Bold;
+
+            block.Inlines.Add(line);
+        }
+
+        // “ xN” 合并计数后缀：默认色。
+        if (pos < text.Length)
+            block.Inlines.Add(new Run { Text = text[pos..] });
+    }
+
+    private SolidColorBrush GetLogRunBrush(Windows.UI.Color color)
+    {
+        uint key = ((uint)color.A << 24) | ((uint)color.R << 16) | ((uint)color.G << 8) | color.B;
+        if (!_logRunBrushes.TryGetValue(key, out SolidColorBrush? brush))
+        {
+            brush = new SolidColorBrush(color);
+            _logRunBrushes[key] = brush;
+        }
+
+        return brush;
     }
 
     /// <summary>把所有已实体行的下划线与选区重画一遍（选区变化、整体文本变化时用）。</summary>
@@ -553,13 +768,30 @@ public sealed partial class MainPage
         }
     }
 
+    /// <summary>主题切换：所有已实体行的彩色文字按新主题重刷（浅色主题要滤掉看不清的 MC 颜色）。</summary>
+    private void OnLogPageThemeChanged(FrameworkElement sender, object args)
+    {
+        int n = VisualTreeHelper.GetChildrenCount(LogRepeater);
+        for (int i = 0; i < n; i++)
+        {
+            if (VisualTreeHelper.GetChild(LogRepeater, i) is Grid grid)
+            {
+                RebuildLogRowText(grid);
+                RedrawLogRow(grid);
+            }
+        }
+    }
+
     /// <summary>标脏所有已实体行（文本变化后用；实际就是重画一次）。</summary>
     private void MarkAllLogRowsDirty() => RedrawAllLogRows();
 
     private void LogLineBox_TextChanged(object sender, TextChangedEventArgs e)
     {
         if (sender is TextBox box && FindLogRowRoot(box) is { } root)
+        {
+            RebuildLogRowText(root);
             RedrawLogRow(root);
+        }
     }
 
     private void LogLineBox_SizeChanged(object sender, SizeChangedEventArgs e)
@@ -589,10 +821,10 @@ public sealed partial class MainPage
     private void RedrawLogRow(Grid root)
     {
         int index = LogRepeater.GetElementIndex(root);
-        if (index < 0 || root.Children.Count < 2)
+        if (index < 0 || root.Children.Count < 3)
             return;
 
-        if (root.Children[0] is not TextBox box || root.Children[1] is not Canvas layer)
+        if (root.Children[0] is not TextBox box || root.Children[2] is not Canvas layer)
             return;
 
         layer.Children.Clear();
@@ -1420,11 +1652,9 @@ public sealed partial class MainPage
     /// </summary>
     private void LogSearchBox_TextChanged(object sender, TextChangedEventArgs e)
     {
-        // 框里一有字就把放大镜收起来（别和输入的文字挤在一起），清空后再出现；
-        // 有字时左边也不再给图标留位（Padding 左 26 → 4），输入的文字直接顶到框左边。
+        // 图标 / 居中提示 / 左内边距跟着「展开态 + 有没有字」切换（2026-11-06 展开态改居中提示）。
         bool empty = string.IsNullOrEmpty(LogSearchBox.Text);
-        LogSearchGlyph.Visibility = empty ? Visibility.Visible : Visibility.Collapsed;
-        LogSearchBox.Padding = empty ? new Thickness(26, 4, 4, 0) : new Thickness(4, 4, 4, 0);
+        UpdateSearchChrome();
 
         _logSearchIndex = -1;
         ClearLogSelection();
@@ -1586,5 +1816,33 @@ public sealed partial class MainPage
         LogSearchCountBadge.Visibility = LogSearchCount.Text.Length == 0
             ? Visibility.Collapsed
             : Visibility.Visible;
+
+        // 徽标不占布局：靠 RenderTransform 挪到不压住输入文字的位置（见 XAML 里那段注释）。
+        // 文案刚变时 ActualWidth 还是旧值，等这一轮布局结束再量一次。
+        UpdateSearchCountBadgeOffset();
+        DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, UpdateSearchCountBadgeOffset);
     }
+
+    private void LogSearchCountBadge_SizeChanged(object sender, SizeChangedEventArgs e) => UpdateSearchCountBadgeOffset();
+
+    /// <summary>把徽标挪到不压住输入文字的位置（只改渲染偏移，不参与测量）。</summary>
+    private void UpdateSearchCountBadgeOffset()
+    {
+        double width = LogSearchCountBadge.ActualWidth;
+        double height = LogSearchCountBadge.ActualHeight;
+
+        if (_searchExpanded)
+        {
+            // 展开态搜索框占满整条命令区，左边就是账号列表，没地方放徽标：
+            // 改贴在框顶左角上方（浮在日志文字上），和原来"浮层徽标"的观感一致。
+            LogSearchCountTranslate.X = 0;
+            LogSearchCountTranslate.Y = height > 0 ? -(height + 4) : 0;
+        }
+        else
+        {
+            LogSearchCountTranslate.X = width > 0 ? -(width + 6) : 0;
+            LogSearchCountTranslate.Y = 0;
+        }
+    }
+
 }

@@ -6,8 +6,8 @@ namespace MCCX.Core;
 
 /// <summary>
 /// 自动指令（2026-10-22 用户需求）：按各自间隔定时把一段文本（<c>/spawn</c> 这类服务器指令、
-/// <c>/useitem</c> 这类 MCC 内部命令、或普通聊天）发出去；每条自己决定"进服立即执行"、
-/// 执行方式（循环 / 只执行一次）、循环次数与自己那条过程日志开关。
+/// <c>/useitem</c> 这类 MCC 内部命令、或普通聊天）发出去；每条自己决定是否启用、
+/// "进服立即执行"、执行方式（循环 / 只执行一次）、循环次数与自己那条过程日志开关。
 ///
 /// <para>
 /// 发送顺序与命令栏回车完全一致（<c>McClient.HandleCommandPromptText</c>）：
@@ -115,6 +115,7 @@ public sealed class AutoCommandBot : ChatBot
                     RunOnJoin = command.RunOnJoin,
                     Loop = command.Loop,
                     RepeatCount = Math.Clamp(command.RepeatCount, 0, MaxRepeatCount),
+                    Enabled = command.Enabled,
                     LogEnabled = command.LogEnabled,
                 })];
 
@@ -129,12 +130,18 @@ public sealed class AutoCommandBot : ChatBot
     public override void Initialize()
     {
         int count;
+        int enabledCount;
         lock (_gate)
+        {
             count = _commands.Length;
+            enabledCount = _commands.Count(command => command.Enabled);
+        }
 
         LogToConsole(count == 0
             ? "§7[自动指令] 已就绪：还没有指令，在弹层里点「新建指令」加一条。"
-            : $"§7[自动指令] 已就绪：{count} 条指令按各自间隔执行。");
+            : enabledCount == count
+                ? $"§7[自动指令] 已就绪：{count} 条指令按各自间隔执行。"
+                : $"§7[自动指令] 已就绪：{count} 条指令中 {enabledCount} 条已启用，其余关着。");
     }
 
     public override void AfterGameJoined()
@@ -195,7 +202,7 @@ public sealed class AutoCommandBot : ChatBot
                 _joinHandled = true;
                 for (int i = 0; i < commands.Length; i++)
                 {
-                    if (!commands[i].RunOnJoin || _leftCounts[i] == 0)
+                    if (!commands[i].Enabled || !commands[i].RunOnJoin || _leftCounts[i] == 0)
                         continue;
 
                     due.Add(new DueCommand(commands[i], "进服执行", Consume(i)));
@@ -206,6 +213,9 @@ public sealed class AutoCommandBot : ChatBot
             // 定时轮：每条各自倒计时，到点执行并重置自己的间隔
             for (int i = 0; i < commands.Length; i++)
             {
+                if (!commands[i].Enabled)
+                    continue; // 这条自己的开关关着：不排队，也不消耗次数
+
                 if (_leftCounts[i] == 0)
                     continue; // 次数用完：不再排队
 

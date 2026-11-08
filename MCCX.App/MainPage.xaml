@@ -17,17 +17,20 @@
         <converters:BoolToVisibilityConverter x:Key="BoolToVisibility" />
 
         <!--
-            参数弹层（Flyout）统一外观（2026-10-21 用户要求：窗口太宽、角要圆一点、文本改回左对齐）：
-            - 内容宽度按内容定：多数 208（原来 312）、鼠标 224、过滤 228、钓鱼 240，
-              输入列同步 114 起收窄（多数 84、鼠标 106、过滤沿用 `*` 填满）；
+            参数弹层（Flyout）统一外观（2026-10-21 用户要求：窗口太宽、角要圆一点、文本改回左对齐；
+            2026-10-31 用户反馈"左边显得过窄"：ScrollViewer 右侧固定留 16 DIP 给滚动条，
+            内容右边看上去比左边宽一截；这里把 FlyoutPresenter 左内边距加到 26，
+            右边仍是 10 + ScrollViewer 的 16 = 26，左右视觉留白一致）：
+            - 内容宽度按内容定：多数 192（原来 312）、鼠标 208、过滤 228、钓鱼 224 等，
+              输入列同步收窄（多数 84、鼠标 106、过滤沿用 `*` 填满）；
             - 标签一律左对齐（`[标签列 *][控件列 固定]`），冒号留在标签里；
-            - 内边距 10,8、圆角 12；
+            - 内边距 26,8,10,8、圆角 12；
             - MinWidth 必须写 0：FlyoutPresenter 默认带 FlyoutThemeMinWidth=288，
               不覆盖的话内容再窄窗口也压不下来。
         -->
         <Style x:Key="ParamFlyoutPresenterStyle" TargetType="FlyoutPresenter">
             <Setter Property="MinWidth" Value="0" />
-            <Setter Property="Padding" Value="10,8" />
+            <Setter Property="Padding" Value="26,8,10,8" />
             <Setter Property="CornerRadius" Value="12" />
         </Style>
 
@@ -307,23 +310,27 @@
             </Grid.RowDefinitions>
 
             <!--
-                连接参数栏：一行放齐 服务器 / 端口 / 用户名 / 版本 + 连接、断开，标签后面都带冒号。
-                服务器给 6* 弹性（下限 160），端口列 92：5 位端口 + 右侧清除按钮（×）才不会把数字盖掉。
+                连接参数栏：一行放齐 服务器 / 端口 / 用户名 / 版本 / 客户端标识 + 连接、断开，标签后面都带冒号。
+                服务器给 5* 弹性（下限 120）：2026-11-05 在“版本”和“连接”之间加了客户端标识下拉，
+                从服务器框的弹性里省出宽度，固定宽度控件（端口 92、版本 92、标识 140）保持不变形。
+                列间距用 4（原来 6）：窗口在 200% 缩放下变窄时，这一行仍能把“连接/断开”留在窗口里。
                 列间距收到 6：标签加冒号要多占一截宽度，从间距里省出来，输入框和按钮一个都不缩小。
                 连接状态不占这一块：它在功能卡片下方单独一行、靠右显示。
             -->
             <!-- 上边距 8：左卡片 Padding=8，内容从卡片顶往下 8 起排；这里补同样的 8，
                  参数行就和左侧「账号列表 / 添加账号」同一条水平线（2026-10-15 需求：表单项高度/落差）。 -->
-            <Grid x:Name="ParamsGrid" Grid.Row="0" Margin="0,8,0,0" ColumnSpacing="6">
+            <Grid x:Name="ParamsGrid" Grid.Row="0" Margin="0,8,0,0" ColumnSpacing="3">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="6*" MinWidth="160" />
+                    <ColumnDefinition Width="5*" MinWidth="120" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="92" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="2*" MinWidth="100" />
                     <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="110" />
+                    <ColumnDefinition Width="92" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="132" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
@@ -396,8 +403,27 @@
                     <ComboBoxItem Content="1.7.10" />
                 </ComboBox>
 
+                <!-- 客户端标识（2026-11-05 需求）：全局设置为默认，这里可给单个账号覆盖。
+                     0 跟随全局 / 1 vanilla / 2 mcc / 3 empty，取值与 MCCConnectionOptions.BrandMode* 一致。
+                     进服时发一次，所以和服务器/端口/用户名一样，连接期间禁用。 -->
+                <TextBlock Grid.Column="8" Text="标识：" VerticalAlignment="Center" />
+                <ComboBox Grid.Column="9"
+                          x:Name="BrandBox"
+                          MinHeight="32"
+                          Height="32"
+                          VerticalAlignment="Center"
+                          IsEnabled="{x:Bind ViewModel.CanEditConnection, Mode=OneWay}"
+                          AutomationProperties.Name="客户端标识"
+                          ToolTipService.ToolTip="客户端标识（minecraft:brand）"
+                          SelectedIndex="{x:Bind ViewModel.BrandModeIndex, Mode=TwoWay}">
+                    <ComboBoxItem Content="跟随全局默认" />
+                    <ComboBoxItem Content="vanilla（原版标识）" />
+                    <ComboBoxItem Content="mcc（Minecraft-Console-Client/版本）" />
+                    <ComboBoxItem Content="empty（不发送标识）" />
+                </ComboBox>
+
                 <!-- 连接/断开 收在行末：整组连接参数一行看完 -->
-                <StackPanel Grid.Column="8" Orientation="Horizontal" Spacing="8">
+                <StackPanel Grid.Column="10" Orientation="Horizontal" Spacing="8">
                     <Button Content="连接"
                             Command="{x:Bind ViewModel.ConnectCommand}" />
                     <Button Content="断开"
@@ -1189,7 +1215,7 @@
 
                     <!--
                         自动指令（2026-10-22 需求）：按各自间隔定时把一段文本/指令发进聊天框。
-                        · 弹层里可以新建任意多条指令，每条自己的"间隔（秒）"与"进服立即执行"相互独立；
+                        · 弹层里可以新建任意多条指令，每条自己的执行开关、"间隔（秒）"与"进服立即执行"相互独立；
                         · 总开关在卡片上（关掉就整组停），弹层里另有本功能的过程日志开关；
                         · 指令以 / 开头时服务器按指令执行（如 /spawn），否则当聊天发——与命令栏回车同一条路。
                         宽度比别的弹层宽一些：一行要放下"指令输入框 + 删除"和"间隔 + 进服立即执行"。
@@ -1205,8 +1231,8 @@
                             <DropDownButton.Flyout>
                                 <Flyout Placement="Bottom" Opened="OnFlyoutOpened" FlyoutPresenterStyle="{StaticResource ParamFlyoutPresenterStyle}">
                                     <ScrollViewer Padding="0,0,16,0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" VerticalScrollMode="Auto" ZoomMode="Disabled" Loaded="FlyoutScroller_Loaded">
-                                        <StackPanel Spacing="8" Width="296">
-                                            <TextBlock Text="按各自间隔把指令发出去：&#x0a;• / 开头先当 MCC 内部命令（如 /useitem、/send），不是内部命令才当服务器指令（如 /spawn）；不带 / 按聊天发。&#x0a;• 每条可单独设间隔、进服立即执行、执行方式（循环 / 只执行一次）、次数（留空 = 无限）与日志开关。"
+                                        <StackPanel Spacing="10" Width="340">
+                                            <TextBlock Text="• / 开头先当 MCC 内部命令（/useitem、/send），否则当服务器指令（/spawn）；不带 / 按聊天发。&#x0a;• 每条可单独启用、设间隔、进服立即执行、执行方式和日志开关。"
                                                        FontSize="12"
                                                        Opacity="0.7"
                                                        TextWrapping="Wrap" />
@@ -1222,108 +1248,110 @@
                                             </Button>
 
                                             <!--
-                                                指令列表（2026-10-22 第二轮）：每条三行——
-                                                  1) 指令框 + 这条自己的日志开关 + 删除 ×
-                                                  2) 间隔（秒）+ 这条自己的"进服立即执行"
-                                                  3) 执行方式（循环 / 只执行一次）+ 循环次数（只执行一次时整块收起）
-                                                输入框都 VerticalAlignment=Center：不跟着 ToggleSwitch 被拉高，
-                                                和别的弹层里的输入框一样高（用户反馈"间隔框偏高"）。
+                                                指令列表（2026-11-01 重新排版，用户反馈"布局凌乱"）：每条四行，全部左对齐、
+                                                同类控件宽度固定，所以每条指令的同一字段位置/宽度完全一样：
+                                                  0) 指令文本框（撑满）+ 删除 ×
+                                                  1) 三个开关一行：启用 / 日志 / 进服立即执行（文字在开关左边，每个开关都有名字）
+                                                  2) 间隔（秒）[64] +（循环执行时）次数 [64] 右对齐
+                                                  3) 执行方式 [140]（固定宽度：两条指令的"只执行一次"不会一条窄一条撑满）
+                                                指令之间用一条分隔线隔开，和左侧账号列表同款（2026-10-31 需求）。
+                                                输入框都 VerticalAlignment=Center：不跟着 ToggleSwitch 被拉高。
                                             -->
                                             <ItemsControl ItemsSource="{x:Bind ViewModel.AutoCommands, Mode=OneWay}">
                                                 <ItemsControl.ItemTemplate>
                                                     <DataTemplate x:DataType="viewmodels:AutoCommandItem">
-                                                        <Grid ColumnSpacing="6" RowSpacing="4" Margin="0,0,0,10">
+                                                        <Border BorderThickness="0,0,0,1"
+                                                                BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
+                                                                Padding="0,0,0,10"
+                                                                Margin="0,0,0,10">
+                                                        <Grid RowSpacing="8">
                                                             <Grid.RowDefinitions>
                                                                 <RowDefinition Height="Auto" />
                                                                 <RowDefinition Height="Auto" />
                                                                 <RowDefinition Height="Auto" />
+                                                                <RowDefinition Height="Auto" />
                                                             </Grid.RowDefinitions>
-                                                            <Grid.ColumnDefinitions>
-                                                                <ColumnDefinition Width="*" />
-                                                                <ColumnDefinition Width="Auto" />
-                                                                <ColumnDefinition Width="Auto" />
-                                                            </Grid.ColumnDefinitions>
 
-                                                            <TextBox Grid.Row="0"
-                                                                     Grid.Column="0"
-                                                                     VerticalAlignment="Center"
-                                                                     AutomationProperties.Name="自动指令文本"
-                                                                     IsSpellCheckEnabled="False"
-                                                                     IsTextPredictionEnabled="False"
-                                                                     PlaceholderText="如 /spawn、/useitem 或 hello"
-                                                                     Text="{x:Bind Text, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                                            <ToggleSwitch Grid.Row="0"
-                                                                          Grid.Column="1"
-                                                                          MinWidth="0"
-                                                                          VerticalAlignment="Center"
-                                                                          HorizontalAlignment="Left"
-                                                                          OnContent="日志"
-                                                                          OffContent="日志"
-                                                                          AutomationProperties.Name="自动指令日志"
-                                                                          ToolTipService.ToolTip="这条指令自己的过程日志开关（不影响其它指令）；关掉后指令照发"
-                                                                          IsOn="{x:Bind LogEnabled, Mode=TwoWay}" />
-                                                            <Button Grid.Row="0"
-                                                                    Grid.Column="2"
-                                                                    Width="30"
-                                                                    Height="30"
-                                                                    Padding="0"
-                                                                    VerticalAlignment="Center"
-                                                                    AutomationProperties.Name="删除自动指令"
-                                                                    ToolTipService.ToolTip="删掉这条指令"
-                                                                    Click="RemoveAutoCommand_Click"
-                                                                    Tag="{x:Bind}">
-                                                                <FontIcon FontFamily="Segoe MDL2 Assets" FontSize="12" Glyph="&#xE711;" />
-                                                            </Button>
-
-                                                            <Grid Grid.Row="1" Grid.ColumnSpan="3" ColumnSpacing="6">
+                                                            <!-- 0) 指令文本 + 删除 -->
+                                                            <Grid ColumnSpacing="8">
                                                                 <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="*" />
                                                                     <ColumnDefinition Width="Auto" />
+                                                                </Grid.ColumnDefinitions>
+                                                                <TextBox VerticalAlignment="Center"
+                                                                         AutomationProperties.Name="自动指令文本"
+                                                                         IsSpellCheckEnabled="False"
+                                                                         IsTextPredictionEnabled="False"
+                                                                         PlaceholderText="如 /spawn、/useitem 或 hello"
+                                                                         Text="{x:Bind Text, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                                                <Button Grid.Column="1"
+                                                                        Width="32"
+                                                                        Height="32"
+                                                                        Padding="0"
+                                                                        VerticalAlignment="Center"
+                                                                        AutomationProperties.Name="删除自动指令"
+                                                                        ToolTipService.ToolTip="删掉这条指令"
+                                                                        Click="RemoveAutoCommand_Click"
+                                                                        Tag="{x:Bind}">
+                                                                    <FontIcon FontFamily="Segoe MDL2 Assets" FontSize="12" Glyph="&#xE711;" />
+                                                                </Button>
+                                                            </Grid>
+
+                                                            <!-- 1) 三个开关一行：标签写在开关左边，避免"两个没有文字的开关 + 一个日志" -->
+                                                            <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="10">
+                                                                <StackPanel Orientation="Horizontal" Spacing="4">
+                                                                    <TextBlock Text="启用" VerticalAlignment="Center" />
+                                                                    <ToggleSwitch MinWidth="0"
+                                                                                  VerticalAlignment="Center"
+                                                                                  OnContent=""
+                                                                                  OffContent=""
+                                                                                  AutomationProperties.Name="自动指令启用"
+                                                                                  ToolTipService.ToolTip="这条指令自己的执行开关：关掉只停这一条，总开关和其它指令不受影响"
+                                                                                  IsOn="{x:Bind Enabled, Mode=TwoWay}" />
+                                                                </StackPanel>
+                                                                <StackPanel Orientation="Horizontal" Spacing="4">
+                                                                    <TextBlock Text="日志" VerticalAlignment="Center" />
+                                                                    <ToggleSwitch MinWidth="0"
+                                                                                  VerticalAlignment="Center"
+                                                                                  OnContent=""
+                                                                                  OffContent=""
+                                                                                  AutomationProperties.Name="自动指令日志"
+                                                                                  ToolTipService.ToolTip="这条指令自己的过程日志开关（不影响其它指令）；关掉后指令照发"
+                                                                                  IsOn="{x:Bind LogEnabled, Mode=TwoWay}" />
+                                                                </StackPanel>
+                                                                <StackPanel Orientation="Horizontal" Spacing="4">
+                                                                    <TextBlock Text="进服立即执行" VerticalAlignment="Center" />
+                                                                    <ToggleSwitch MinWidth="0"
+                                                                                  VerticalAlignment="Center"
+                                                                                  OnContent=""
+                                                                                  OffContent=""
+                                                                                  AutomationProperties.Name="自动指令进服立即执行"
+                                                                                  ToolTipService.ToolTip="打开：进服（真正进入游戏）后先执行一次这条，之后按上面的方式继续"
+                                                                                  IsOn="{x:Bind RunOnJoin, Mode=TwoWay}" />
+                                                                </StackPanel>
+                                                            </StackPanel>
+
+                                                            <!-- 2) 间隔（秒）+（循环执行时）次数
+                                                                 标签列固定 88：和下一行"执行方式："用同一列宽，
+                                                                 间隔框和执行方式下拉就在同一条竖线上，不会一前一后。 -->
+                                                            <Grid Grid.Row="2" ColumnSpacing="8">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="88" />
                                                                     <ColumnDefinition Width="64" />
                                                                     <ColumnDefinition Width="*" />
+                                                                    <ColumnDefinition Width="Auto" />
                                                                 </Grid.ColumnDefinitions>
                                                                 <TextBlock Text="间隔（秒）：" VerticalAlignment="Center" />
                                                                 <TextBox Grid.Column="1"
-                                                                         Width="64"
                                                                          VerticalAlignment="Center"
                                                                          AutomationProperties.Name="自动指令间隔"
                                                                          IsSpellCheckEnabled="False"
                                                                          IsTextPredictionEnabled="False"
                                                                          PlaceholderText="60"
                                                                          Text="{x:Bind IntervalSeconds, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                                                <!--
-                                                                    开关文字直接当标签用（开/关两种状态都写同一句）：
-                                                                    这行要塞下「间隔（秒）: 64 + 进服立即执行」，再单起一列标签就会被挤成省略号；
-                                                                    开关滑块本身已经表示开关状态，文字只当说明。
-                                                                -->
-                                                                <ToggleSwitch Grid.Column="2"
-                                                                              MinWidth="0"
-                                                                              VerticalAlignment="Center"
-                                                                              HorizontalAlignment="Left"
-                                                                              OnContent="进服立即执行"
-                                                                              OffContent="进服立即执行"
-                                                                              AutomationProperties.Name="自动指令进服立即执行"
-                                                                              ToolTipService.ToolTip="打开：进服（真正进入游戏）后先执行一次这条，之后按上面的方式继续"
-                                                                              IsOn="{x:Bind RunOnJoin, Mode=TwoWay}" />
-                                                            </Grid>
-
-                                                            <Grid Grid.Row="2" Grid.ColumnSpan="3" ColumnSpacing="4">
-                                                                <Grid.ColumnDefinitions>
-                                                                    <ColumnDefinition Width="Auto" />
-                                                                    <ColumnDefinition Width="*" />
-                                                                    <ColumnDefinition Width="Auto" />
-                                                                </Grid.ColumnDefinitions>
-                                                                <TextBlock Text="执行方式：" VerticalAlignment="Center" />
-                                                                <ComboBox Grid.Column="1"
-                                                                          MinWidth="0"
-                                                                          HorizontalAlignment="Stretch"
-                                                                          AutomationProperties.Name="自动指令方式"
-                                                                          SelectedIndex="{x:Bind ModeIndex, Mode=TwoWay}">
-                                                                    <ComboBoxItem Content="循环执行" />
-                                                                    <ComboBoxItem Content="只执行一次" />
-                                                                </ComboBox>
-                                                                <StackPanel Grid.Column="2"
+                                                                <StackPanel Grid.Column="3"
                                                                             Orientation="Horizontal"
-                                                                            Spacing="4"
+                                                                            Spacing="6"
                                                                             VerticalAlignment="Center"
                                                                             Visibility="{x:Bind RepeatVisibility, Mode=OneWay}">
                                                                     <TextBlock Text="次数：" VerticalAlignment="Center" />
@@ -1337,7 +1365,27 @@
                                                                              Text="{x:Bind RepeatCount, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
                                                                 </StackPanel>
                                                             </Grid>
+
+                                                            <!-- 3) 执行方式（固定宽度，别让"只执行一次"把下拉拉满整行） -->
+                                                            <Grid Grid.Row="3" ColumnSpacing="8">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="88" />
+                                                                    <ColumnDefinition Width="140" />
+                                                                    <ColumnDefinition Width="*" />
+                                                                </Grid.ColumnDefinitions>
+                                                                <TextBlock Text="执行方式：" VerticalAlignment="Center" />
+                                                                <ComboBox Grid.Column="1"
+                                                                          Width="140"
+                                                                          MinWidth="0"
+                                                                          HorizontalAlignment="Left"
+                                                                          AutomationProperties.Name="自动指令方式"
+                                                                          SelectedIndex="{x:Bind ModeIndex, Mode=TwoWay}">
+                                                                    <ComboBoxItem Content="循环执行" />
+                                                                    <ComboBoxItem Content="只执行一次" />
+                                                                </ComboBox>
+                                                            </Grid>
                                                         </Grid>
+                                                        </Border>
                                                     </DataTemplate>
                                                 </ItemsControl.ItemTemplate>
                                             </ItemsControl>
@@ -1371,6 +1419,10 @@
                             <Flyout Placement="Bottom" Opened="OnFlyoutOpened" FlyoutPresenterStyle="{StaticResource ParamFlyoutPresenterStyle}">
                                 <ScrollViewer Padding="0,0,16,0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" VerticalScrollMode="Auto" ZoomMode="Disabled" Loaded="FlyoutScroller_Loaded">
                                     <StackPanel Spacing="8" Width="228">
+                                        <TextBlock Text="&#x0a;• 只影响游戏服务器消息进不进日志；&#x0a;• 可点击输入框右边的小图标展开成多行编辑；&#x0a;• 前缀可多个，用换行/逗号/顿号/竖线任一项分隔即可，留空等于不过滤。"
+                                                   FontSize="12"
+                                                   Opacity="0.7"
+                                                   TextWrapping="Wrap" />
                                         <Grid ColumnSpacing="8">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="76" />
@@ -1450,10 +1502,6 @@
                                                 </Button>
                                             </Grid>
                                         </Grid>
-                                        <TextBlock Text="只影响服务器消息进不进日志（连接提示、Bot 日志不受影响）；前缀可多个，用换行/逗号/顿号/竖线分隔，命中任一项即按所选方式处理；留空等于不过滤。点输入框右端的小图标可展开成多行编辑。"
-                                                   FontSize="12"
-                                                   Opacity="0.7"
-                                                   TextWrapping="Wrap" />
                                     </StackPanel>
                                 </ScrollViewer>
                             </Flyout>
@@ -1510,13 +1558,13 @@
                   把日志往下顶）。覆盖层 IsHitTestVisible=False：点击/框选全部穿透到下面的列表，
                   只是视觉上盖在日志文字上层。
             -->
-            <Grid x:Name="LogAreaGrid" Grid.Row="2">
+            <Grid x:Name="LogAreaGrid" Grid.Row="2" SizeChanged="LogAreaGrid_SizeChanged">
                 <ScrollViewer x:Name="LogScrollHost"
                               IsTabStop="True"
                               UseSystemFocusVisuals="False"
                               Loaded="LogScrollHost_Loaded"
                               SizeChanged="LogScrollHost_SizeChanged"
-                              VerticalScrollBarVisibility="Auto"
+                              VerticalScrollBarVisibility="Hidden"
                               VerticalScrollMode="Auto"
                               HorizontalScrollBarVisibility="Disabled"
                               HorizontalScrollMode="Disabled">
@@ -1556,6 +1604,22 @@
                                       PointerCanceled="LogRow_PointerCanceled"
                                       PointerCaptureLost="LogRow_PointerCaptureLost"
                                       RightTapped="LogRow_RightTapped">
+                                    <!--
+                                        三层结构（2026-10-31 加中间那层）：
+                                          0) LogLineBox  = 只读 TextBox，**整块 Opacity=0**：保留布局/行高、
+                                             GetRectFromCharacterIndex、UIA 的 Edit + ValuePattern/TextPattern
+                                             （自动化测试和选区几何全指着它），视觉上不再显示任何字；
+                                          1) LogLineText = TextBlock + Inlines，真正画出来的彩色文字
+                                             （按服务器推来的 § 颜色码分段，见 Logging.LogLineFormat）；
+                                          2) LogRowLayer = Canvas，画选区高亮 / 链接下划线（盖在文字上面）。
+                                        为什么是 Opacity=0 而不只是 Foreground=Transparent：只把前景色设成透明时，
+                                        WinUI 的 TextBox 仍会画出一层灰白的字形残影，和 TextBlock 的彩色字差
+                                        约 1px 叠在一起，暗色模式下看着就是"每个字都拖着一层重阴影"（2026-11-01
+                                        用户反馈）。Opacity=0 之后 TextBox 完全不上屏，UIA 仍能读到 Text
+                                        （ValuePattern/TextPattern 都是同一个 Text 属性，已实测）。
+                                        1 和 0 必须字体、字号、内边距、折行宽度完全一致，否则彩色字会和
+                                        选区/下划线错位；行宽由 ApplyLogRowWidth 同时钉给这两层。
+                                    -->
                                     <TextBox x:Name="LogLineBox"
                                              IsReadOnly="True"
                                              IsHitTestVisible="False"
@@ -1567,6 +1631,8 @@
                                              Padding="0"
                                              UseSystemFocusVisuals="False"
                                              TextWrapping="Wrap"
+                                             Foreground="Transparent"
+                                             Opacity="0"
                                              SelectionHighlightColor="Transparent"
                                              FontFamily="Consolas"
                                              FontSize="12"
@@ -1589,6 +1655,13 @@
                                             <SolidColorBrush x:Key="TextControlFocusBorderBrush" Color="Transparent" />
                                         </TextBox.Resources>
                                     </TextBox>
+                                    <TextBlock x:Name="LogLineText"
+                                               IsHitTestVisible="False"
+                                               IsTabStop="False"
+                                               TextWrapping="Wrap"
+                                               FontFamily="Consolas"
+                                               FontSize="12"
+                                               Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
                                     <Canvas x:Name="LogRowLayer"
                                             IsHitTestVisible="False"
                                             Background="Transparent" />
@@ -1598,6 +1671,26 @@
                     </ItemsRepeater>
                 </Grid>
                 </ScrollViewer>
+
+                <!--
+                    日志滚动条（2026-10-31 用户要求：显示范围限制在右上角状态卡片和右下角搜索框之间，
+                    不再被这两块浮层盖住）。
+                    · LogScrollHost 的原生滚动条改成 Hidden，滚动本身（滚轮 / 键盘 / UIA ScrollPattern）不受影响；
+                    · 这里放一条独立的 ScrollBar，只占右侧 12 DIP，上下边距由代码按状态卡片 / 搜索框的实际高度算；
+                    · 值由 LogScrollViewer_ViewChanged / LayoutUpdated 单向同步；拖动它时反向 ChangeView。
+                -->
+                <ScrollBar x:Name="LogScrollBarOverlay"
+                           Orientation="Vertical"
+                           HorizontalAlignment="Right"
+                           VerticalAlignment="Stretch"
+                           Width="12"
+                           MinWidth="0"
+                           IndicatorMode="MouseIndicator"
+                           IsTabStop="False"
+                           SmallChange="48"
+                           LargeChange="120"
+                           ValueChanged="LogScrollBarOverlay_ValueChanged"
+                           Margin="0,48,0,36" />
 
                 <!--
                     连接状态 + 延迟：浮在日志区**右上角**（2026-10-09 问题③定稿）。
@@ -1611,37 +1704,77 @@
                     （原来留了 6 DIP 右缩进，看着比卡片缩进去一截；右下角的日志搜索框一直就是贴右对齐的）。
                     上边距同时归零：浮窗顶边正好落在日志区顶边，与卡片的间距就是网格的 10 DIP。
                 -->
-                <Border HorizontalAlignment="Right"
+                <Border x:Name="ConnectionStatusBadge"
+                        HorizontalAlignment="Right"
                         VerticalAlignment="Top"
                         Margin="0,0,0,0"
                         Padding="10,5"
                         CornerRadius="8"
                         IsHitTestVisible="False"
+                        SizeChanged="LogOverlayChrome_SizeChanged"
                         Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                         BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                         BorderThickness="1">
-                    <StackPanel Orientation="Vertical"
+                    <!--
+                        2026-10-31 需求：血量 / 饥饿显示在状态区**左侧**。
+                        放在同一行（横向）而不是再叠一行：浮层高度不变，日志滚动条的
+                        上边距（按 ConnectionStatusBadge.ActualHeight 算）也就不受影响。
+                        没收到过 UpdateHealth（或已断开）时整块 Visibility=Collapsed，不占宽度。
+                        数值是 MCC 的 0-20 口径：血量半颗心显示一位小数（19.5/20），饥饿为整数。
+                    -->
+                    <StackPanel Orientation="Horizontal"
                                 HorizontalAlignment="Right">
-                        <TextBlock x:Name="StateTextBlock"
-                                   HorizontalAlignment="Right"
-                                   FontWeight="SemiBold"
-                                   Foreground="{ThemeResource TextFillColorPrimaryBrush}"
-                                   Text="{x:Bind ViewModel.StateText, Mode=OneWay}"
-                                   TextTrimming="CharacterEllipsis" />
-                        <TextBlock HorizontalAlignment="Right"
-                                   FontSize="12"
-                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                   Visibility="{x:Bind ViewModel.IsConnected, Mode=OneWay, Converter={StaticResource BoolToVisibility}}"
-                                   Text="{x:Bind ViewModel.LatencyText, Mode=OneWay}"
-                                   TextTrimming="CharacterEllipsis" />
+                        <StackPanel Orientation="Horizontal"
+                                    VerticalAlignment="Center"
+                                    Margin="0,0,12,0"
+                                    ToolTipService.ToolTip="生命值 / 饥饿值（0-20）"
+                                    Visibility="{x:Bind ViewModel.ShowVitals, Mode=OneWay, Converter={StaticResource BoolToVisibility}}">
+                            <TextBlock Text="♥"
+                                       FontSize="13"
+                                       FontWeight="SemiBold"
+                                       VerticalAlignment="Center"
+                                       Foreground="#FF6B6B" />
+                            <TextBlock Text="{x:Bind ViewModel.VitalsHealthText, Mode=OneWay}"
+                                       Margin="3,0,10,0"
+                                       FontSize="12"
+                                       VerticalAlignment="Center"
+                                       Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                            <TextBlock Text="🍗"
+                                       FontSize="12"
+                                       VerticalAlignment="Center" />
+                            <TextBlock Text="{x:Bind ViewModel.VitalsFoodText, Mode=OneWay}"
+                                       Margin="3,0,0,0"
+                                       FontSize="12"
+                                       VerticalAlignment="Center"
+                                       Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                        </StackPanel>
+
+                        <StackPanel Orientation="Vertical"
+                                    HorizontalAlignment="Right">
+                            <TextBlock x:Name="StateTextBlock"
+                                       HorizontalAlignment="Right"
+                                       FontWeight="SemiBold"
+                                       Foreground="{ThemeResource TextFillColorPrimaryBrush}"
+                                       Text="{x:Bind ViewModel.StateText, Mode=OneWay}"
+                                       TextTrimming="CharacterEllipsis" />
+                            <TextBlock HorizontalAlignment="Right"
+                                       FontSize="12"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                       Visibility="{x:Bind ViewModel.IsConnected, Mode=OneWay, Converter={StaticResource BoolToVisibility}}"
+                                       Text="{x:Bind ViewModel.LatencyText, Mode=OneWay}"
+                                       TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
                     </StackPanel>
                 </Border>
 
                 <!--
-                    日志搜索（2026-10-14 需求；2026-10-16 改版第二轮）：
-                    · 浮在日志区**右下角**（紧贴命令栏右上）。
+                    日志搜索（2026-10-14 需求；2026-10-16 改版第二轮；2026-11-06 增加离线展开）：
+                    · 连上服务器时浮在日志区**右下角**（紧贴命令栏右上）。
                     · 搜索框本身宽度 = 命令栏里"发送 + 清空日志"两个按钮加起来的宽度，右边和命令栏右端对齐
                       （2026-10-16 用户要求"同宽更整齐"）；宽度在代码里按按钮实际宽度算，见 CommandBarGrid_SizeChanged。
+                    · **断开后不收起**：从右下角的小框逐渐展开到整条命令区（宽度覆盖「常用命令 → 清空日志」整行，
+                      高度等于命令输入框），重新连上时动画收回右下角（2026-11-06 用户要求）。
+                      命令栏那一行离线时保留高度，所以展开后的框正好落在命令栏上；几何值见 MainPage.xaml.cs 的 SetSearchLayout。
                     · 匹配数是贴在搜索框**左边**的小徽标，不占搜索框宽度（浮在日志文字上，所以带卡片底 + 描边）；
                       放进框里或摆到框右侧都会把搜索框挤窄或顶出对齐线，只有挪到左边两头都保住。
                     · 只留一层边框：不再套外层卡片 Border，直接用 TextBox 自己的边框，
@@ -1650,32 +1783,37 @@
                       框里一有字图标就暂时隐藏，清空后再出现（2026-10-16 用户要求，见 LogSearchBox_TextChanged）。
                     · 有搜索词时日志**只显示命中的行**（没命中的暂时不显示，清空搜索立刻恢复整份日志
                       并贴回底部，见 MainPage.Log.cs 的 LogSearchBox_TextChanged / RebuildFilteredLogs）。
-                    · 2026-10-16（第三轮）：只在**连上服务器之后**才显示——没连上时和命令栏一起整块收起
-                      （日志搜索是配着"发命令"用的，离线没得发；绑定 ViewModel.IsConnected）。
                     · 不插在卡片和日志之间，也不进 LogScrollHost——后者会污染 Get-RecentLogText 读到的整块文本。
                     匹配针对每行 LogEntry.Text 原文（大小写不敏感子串），命中行仍按"行 TextBox"参与 UIA。
                 -->
                 <Grid x:Name="LogSearchHost"
-                      Visibility="{x:Bind ViewModel.IsConnected, Mode=OneWay, Converter={StaticResource BoolToVisibility}}"
                       HorizontalAlignment="Right"
                       VerticalAlignment="Bottom"
+                      SizeChanged="LogOverlayChrome_SizeChanged"
                       Margin="0,0,0,2">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="Auto" />
-                    </Grid.ColumnDefinitions>
+                    <!-- 离线展开/连回收起的位置与宽度都走动画（见 SetSearchLayout）：
+                         只平移不改布局槽位，动画结束后把基准值写回，窗口缩放时还能重新贴合命令输入框。 -->
+                    <Grid.RenderTransform>
+                        <TranslateTransform x:Name="LogSearchTranslate" />
+                    </Grid.RenderTransform>
 
-                    <!-- 匹配数徽标（贴搜索框左边，浮在日志文字上） -->
+                    <!-- 匹配数徽标（浮在日志文字上；收起态贴搜索框左侧，展开态贴框顶左角上方）。
+                         2026-11-07：不再占布局列——展开态的搜索框正好等于日志区宽度，徽标一出现
+                         会把整块推得比日志区还宽（实测此时 TextBox 直接不再上屏，框和输入的字一起消失）。
+                         改成叠在同一格里、用 RenderTransform 平移：纯视觉偏移，不参与测量。 -->
                     <Border x:Name="LogSearchCountBadge"
-                            Grid.Column="0"
+                            HorizontalAlignment="Left"
                             VerticalAlignment="Center"
-                            Margin="0,0,6,0"
                             Padding="6,0"
                             CornerRadius="6"
                             Visibility="Collapsed"
+                            SizeChanged="LogSearchCountBadge_SizeChanged"
                             Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                             BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                             BorderThickness="1">
+                        <Border.RenderTransform>
+                            <TranslateTransform x:Name="LogSearchCountTranslate" />
+                        </Border.RenderTransform>
                         <TextBlock x:Name="LogSearchCount"
                                    VerticalAlignment="Center"
                                    FontSize="12"
@@ -1683,14 +1821,18 @@
                                    Text="" />
                     </Border>
 
-                    <!-- 搜索框本体（宽度在代码里设成"发送 + 清空日志"之和）：
+                    <!-- 搜索框本体（收起时宽度在代码里设成"发送 + 清空日志"之和；展开时覆盖整条命令区）：
                          图标叠在输入框左侧——TextBox 没内置前置图标，用一层 Grid 叠一个不可命中的
                          FontIcon，靠左边距把文字让开（没字时 Padding 左 26）。
                          Padding 上 4（2026-10-16 用户反馈"文字太靠上"）：TextBox 是拿整条行盒
                          （含 CJK 字形根本不用的下伸部）居中的，汉字墨迹天生就偏上，垫 4 让墨迹落到
                          框中间，正好和放大镜的圆对齐。有字时左 Padding 收到 4（文字顶到左边），
-                         都在 LogSearchBox_TextChanged 里切。 -->
-                    <Grid x:Name="LogSearchField" Grid.Column="1">
+                         都在 LogSearchBox_TextChanged 里切。
+                         2026-11-06（用户要求）：断开后的展开态只留底边框、去掉上/左/右边框与圆角，
+                         提示文本（放大镜 + "搜索日志"）整体居中。TextBox 的 PlaceholderText 不能改
+                         对齐方式，所以展开时清空原生占位、换成 LogSearchHintPanel 这个居中覆盖层；
+                         连上服务器收回到右下角时再恢复原生占位与图标。 -->
+                    <Grid x:Name="LogSearchField">
                         <TextBox x:Name="LogSearchBox"
                                  Height="32"
                                  MinWidth="60"
@@ -1710,6 +1852,22 @@
                                   VerticalAlignment="Center"
                                   IsHitTestVisible="False"
                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <!-- 展开态居中提示（只在离线展开且输入为空时显示；见 ApplySearchBoxPresentation） -->
+                        <StackPanel x:Name="LogSearchHintPanel"
+                                    Orientation="Horizontal"
+                                    HorizontalAlignment="Center"
+                                    VerticalAlignment="Center"
+                                    Spacing="8"
+                                    IsHitTestVisible="False"
+                                    Visibility="Collapsed">
+                            <FontIcon Glyph="&#xE721;"
+                                      FontSize="18"
+                                      Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock Text="搜索日志"
+                                       CharacterSpacing="200"
+                                       VerticalAlignment="Center"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        </StackPanel>
                     </Grid>
                 </Grid>
 
@@ -1721,10 +1879,11 @@
                  （2026-10-15 需求：日志搜索移到日志区右下角，发送/清空日志留在最右）
                  2026-10-16：监听本行尺寸，把右下角搜索框的宽度对齐到“发送 + 清空日志”两个按钮的合计宽度
                  2026-10-16（第三轮）：没连上服务器时整行收起（连上才显示）——输入框/发送/清空日志离线点了也没用
-                 （见 ViewModel.IsConnected 绑定；重新显示时还要把右下角搜索框的宽度重算一次，见 MainPage.xaml.cs）
+                 2026-11-06（用户要求）：离线时**保留这一行的高度**，把四个控件收起，让日志搜索框展开到
+                 命令区（宽度覆盖整行，高度同命令输入框）；显隐/行高由 MainPage.xaml.cs 的
+                 SyncCommandBarForConnection 控制，不再用 Visibility 绑定整行。
             -->
-            <Grid Grid.Row="3" x:Name="CommandBarGrid" ColumnSpacing="8" SizeChanged="CommandBarGrid_SizeChanged"
-                  Visibility="{x:Bind ViewModel.IsConnected, Mode=OneWay, Converter={StaticResource BoolToVisibility}}">
+            <Grid Grid.Row="3" x:Name="CommandBarGrid" ColumnSpacing="8" SizeChanged="CommandBarGrid_SizeChanged">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />

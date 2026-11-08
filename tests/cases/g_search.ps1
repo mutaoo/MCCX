@@ -2,7 +2,11 @@
 # 2026-10-15 改版：去掉上/下跳转按钮（改为滚轮翻看命中），搜索框内嵌放大镜图标。
 # 2026-10-16 改版：命令栏和日志搜索框变成"连上服务器才显示"，所以本用例要先连本地测试服
 #   （Enter-TestSession：起本地测试服 + 专用测试账号 MccXSearchTest，结束删账号还原基线，
-#    不碰用户已有账号）；顺带把"未连接时整块收起"也钉住。
+#    不碰用户已有账号）；顺带把"未连接时命令栏禁用、搜索框展开到命令输入框位置"也钉住。
+# 2026-11-06 改版（用户要求）：断开后命令栏不再收起，而是"保留布局但禁用/透明"，日志搜索框
+#   从右下角逐渐展开到命令区（宽度覆盖整行，高度与命令输入框一致）；重新连上再动画收回右下角。
+#   所以第 0 段不再断言"节点不存在"，改成断言节点仍在、命令栏控件 IsEnabled=False、
+#   搜索框可用且左右边缘贴住命令区、顶边/高度与命令输入框一致。
 # 2026-10-16 追加（用户反馈）：筛选结束（清空搜索框）后视图必须回到最底的最新日志，而不是停在
 #   第一条命中（顶部）。复现靠 RCON 向本地测试服慢慢广播 40 行 say 当"一屏放不下的长日志"，
 #   再"筛一个命中很多的词 → 清空"；原样只对本地测试服广播，用户自己的服务器一概不碰。
@@ -77,6 +81,31 @@ function Get-IconInk {
     return $ink
 }
 
+# 2026-11-07：取搜索框内部靠右那块（避开文字/清空按钮）的底色，用来验证"点进去不会变白底"。
+# 采样点按框高的比例换算 DIP→设备像素（200% DPI 时是 2 倍），换主题/缩放都不用改。
+function Get-BoxBackdrop {
+    param($Box)
+    $r = $Box.Current.BoundingRectangle
+    if ($r.Width -lt 10) { return $null }
+    $h = [IntPtr]$script:Hwnd
+    $wr = New-Object MccXSearchShot+RECT
+    [void][MccXSearchShot]::GetWindowRect($h, [ref]$wr)
+    $w = $wr.R - $wr.L; $ht = $wr.B - $wr.T
+    $bmp = New-Object System.Drawing.Bitmap $w, $ht
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $hdc = $g.GetHdc()
+    $null = [MccXSearchShot]::PrintWindow($h, $hdc, 3)
+    $g.ReleaseHdc($hdc)
+    $g.Dispose()
+
+    $scale = $r.Height / 32.0
+    $x = [int](($r.X - $wr.L) + $r.Width * 0.8)
+    $y = [int](($r.Y - $wr.T) + 16 * $scale)
+    $c = $bmp.GetPixel($x, $y)
+    $bmp.Dispose()
+    return $c
+}
+
 # 建议浮层是 Popup，不挂在主窗口子树里：按 AutomationId + 进程跨窗口找（同 g_new 的做法）
 function Find-IdAnywhere([string]$Id) {
     $procId = Get-MainProcId
@@ -111,20 +140,80 @@ Start-Sleep -Seconds 2
 
 $session = $null
 try {
-    Write-Host "`n=== 0) 未连接时：命令栏与日志搜索框整块收起 ==="
+    Write-Host "`n=== 0) 未连接时：命令栏保留布局但禁用，日志搜索框展开到命令输入框的位置 ==="
     $stateOff = ''
     try { $stateOff = Get-WindowStateText $script:AppRoot } catch { }
     Check ($stateOff -eq '未连接') '起步就是未连接' "实际='$stateOff'"
-    foreach ($id in @('CommandBox', 'LogSearchBox', 'FrequentCommandsButton')) {
-        Check ($null -eq (Find-IdAnywhere $id)) "未连接时 $id 已收起"
+
+    # 2026-11-06 起离线不再 Visibility=Collapsed（否则搜索框量不到命令输入框的目标矩形），
+    # 改成整行 Opacity=0 + IsHitTestVisible=false + 四个子控件 IsEnabled=false：
+    # UIA 节点仍在，只是点不动、Tab 也进不去。
+    $cmdOff = Find-IdAnywhere 'CommandBox'
+    $searchOff = Find-IdAnywhere 'LogSearchBox'
+    Check ($null -ne $cmdOff) '未连接时命令输入框仍在自动化树里（只禁用，不收起）'
+    Check ($null -ne $searchOff) '未连接时日志搜索框仍显示（展开态）'
+    if ($cmdOff) {
+        Check (-not $cmdOff.Current.IsEnabled) '未连接时命令输入框禁用' "IsEnabled=$($cmdOff.Current.IsEnabled)"
+    }
+    if ($searchOff) {
+        Check ($searchOff.Current.IsEnabled) '未连接时日志搜索框仍可输入' "IsEnabled=$($searchOff.Current.IsEnabled)"
     }
     foreach ($name in @('发送', '清空日志', '常用命令')) {
         $b = $null
         try { $b = Get-UiButton $name } catch { $b = $null }
-        Check ($null -eq $b) "未连接时「$name」按钮已收起"
+        Check ($null -ne $b) "未连接时「$name」按钮仍在自动化树里（只禁用，不收起）"
+        if ($b) {
+            Check (-not $b.Current.IsEnabled) "未连接时「$name」按钮禁用" "IsEnabled=$($b.Current.IsEnabled)"
+        }
     }
 
-    Write-Host "`n=== 连接本地测试服（命令栏/搜索框要连上之后才显示） ==="
+    # 展开态的几何要求（2026-11-06 第二轮）：宽度覆盖整条命令区（「常用命令」左边缘 →
+    # 「清空日志」右边缘），顶边/高度仍与命令输入框一致。BoundingRectangle 是设备像素，允许 ±3 px。
+    if ($cmdOff -and $searchOff) {
+        $leftBtn = $null; $rightBtn = $null
+        try { $leftBtn = Get-UiButton '常用命令' } catch { }
+        try { $rightBtn = Get-UiButton '清空日志' } catch { }
+        if ($leftBtn -and $rightBtn) {
+            $rl = $leftBtn.Current.BoundingRectangle
+            $rr = $rightBtn.Current.BoundingRectangle
+            $rc = $cmdOff.Current.BoundingRectangle
+            $rs = $searchOff.Current.BoundingRectangle
+            Write-Host ("  命令区    : x={0} right={1}" -f $rl.X, ($rr.X + $rr.Width))
+            Write-Host ("  命令输入框: x={0} y={1} w={2} h={3}" -f $rc.X, $rc.Y, $rc.Width, $rc.Height)
+            Write-Host ("  搜索框    : x={0} y={1} w={2} h={3}" -f $rs.X, $rs.Y, $rs.Width, $rs.Height)
+            Check ([Math]::Abs($rs.X - $rl.X) -le 3) '展开后搜索框左边缘与命令区左边缘对齐' "Δ=$([Math]::Abs($rs.X - $rl.X))"
+            Check ([Math]::Abs(($rs.X + $rs.Width) - ($rr.X + $rr.Width)) -le 3) '展开后搜索框右边缘与命令区右边缘对齐' "Δ=$([Math]::Abs(($rs.X + $rs.Width) - ($rr.X + $rr.Width)))"
+            Check ([Math]::Abs($rs.Y - $rc.Y) -le 3) '展开后搜索框顶边与命令输入框对齐' "Δy=$([Math]::Abs($rs.Y - $rc.Y))"
+            Check ([Math]::Abs($rs.Height - $rc.Height) -le 3) '展开后搜索框与命令输入框同高' "Δh=$([Math]::Abs($rs.Height - $rc.Height))"
+        }
+    }
+
+    # 2026-11-07（用户反馈）：离线展开态点进搜索框输入时，整块框会消失；点进去还会变白底。
+    # 根因："命中 n/N"徽标原来用布局列把整块撑得比日志区还宽 → TextBox 被挤出可视区；
+    # 现在徽标只做渲染偏移（不参与测量）。这里钉住：输入后框仍上屏、焦点态底色不变白、徽标能读到。
+    if ($searchOff) {
+        $bgBefore = Get-BoxBackdrop $searchOff
+        Set-Edit $searchOff 'MCCX'
+        Start-Sleep -Milliseconds 700
+        $rTyped = $searchOff.Current.BoundingRectangle
+        Check ($rTyped.Width -gt 100) '离线展开态输入后搜索框仍在上屏（不会整块消失）' `
+            ("实际 w={0} offscreen={1}" -f $rTyped.Width, $searchOff.Current.IsOffscreen)
+        $bgFocused = Get-BoxBackdrop $searchOff
+        $sameBg = $null -ne $bgBefore -and $null -ne $bgFocused `
+            -and [Math]::Abs($bgBefore.R - $bgFocused.R) -le 8 `
+            -and [Math]::Abs($bgBefore.G - $bgFocused.G) -le 8 `
+            -and [Math]::Abs($bgBefore.B - $bgFocused.B) -le 8
+        $bgText = if ($bgBefore -and $bgFocused) {
+            '#{0:X2}{1:X2}{2:X2} -> #{3:X2}{4:X2}{5:X2}' -f $bgBefore.R, $bgBefore.G, $bgBefore.B, $bgFocused.R, $bgFocused.G, $bgFocused.B
+        } else { 'n/a' }
+        Check $sameBg '点进搜索框后底色不变（与日志区一致，不变白底）' $bgText
+        $cOff = Get-SearchCountText
+        Check (-not [string]::IsNullOrWhiteSpace($cOff)) '离线输入后出现命中计数徽标' "实际=[$cOff]"
+        Set-Edit $searchOff ''
+        Start-Sleep -Milliseconds 500
+    }
+
+    Write-Host "`n=== 连接本地测试服（命令栏恢复可用，搜索框收回右下角） ==="
     $session = Enter-TestSession -User 'MccXSearchTest'
     Write-Host "  已连接: $($session.StateText)"
     foreach ($id in @('CommandBox', 'LogSearchBox', 'FrequentCommandsButton')) {
@@ -134,6 +223,25 @@ try {
         $b = $null
         try { $b = Get-UiButton $name } catch { $b = $null }
         Check ($null -ne $b) "连上后「$name」按钮显示出来"
+        if ($b) {
+            Check ($b.Current.IsEnabled) "连上后「$name」按钮可用" "IsEnabled=$($b.Current.IsEnabled)"
+        }
+    }
+
+    # 连上后搜索框要回到右下角的小尺寸（宽度 = 发送 + 清空日志，明显比命令输入框窄）。
+    # 收回也走 240ms 动画，等它跑完再量。
+    Start-Sleep -Milliseconds 600
+    $cmdOn = Find-IdAnywhere 'CommandBox'
+    $searchOn = Find-IdAnywhere 'LogSearchBox'
+    if ($cmdOn) {
+        Check ($cmdOn.Current.IsEnabled) '连上后命令输入框可编辑' "IsEnabled=$($cmdOn.Current.IsEnabled)"
+    }
+    if ($searchOn) {
+        $rs = $searchOn.Current.BoundingRectangle
+        $rc = if ($cmdOn) { $cmdOn.Current.BoundingRectangle } else { $rs }
+        Write-Host ("  连上后搜索框: x={0} y={1} w={2} h={3}" -f $rs.X, $rs.Y, $rs.Width, $rs.Height)
+        Check ($rs.Width -lt $rc.Width) '连上后搜索框收回右下角（不再撑到命令输入框宽）' "搜索框=$($rs.Width) 命令框=$($rc.Width)"
+        Check ($rs.Y -lt $rc.Y) '连上后搜索框在命令栏上方（右下角）' "搜索框 y=$($rs.Y) 命令框 y=$($rc.Y)"
     }
 
     Write-Host "`n=== 1) 日志搜索框 ==="

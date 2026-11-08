@@ -36,8 +36,13 @@
                             Spacing="2"
                             VerticalAlignment="Center"
                             Margin="4,0,0,0">
+                    <!-- 2026-11-07（用户要求）：程序名比标题栏默认 CaptionTextBlockStyle（12px）
+                         放大到 16px，字间距略微拉开（CharacterSpacing=50 ≈ 0.05em），
+                         和右侧「设置」菜单拉开层次。 -->
                     <TextBlock Text="MCCX"
                                VerticalAlignment="Center"
+                               FontSize="16"
+                               CharacterSpacing="50"
                                Style="{ThemeResource CaptionTextBlockStyle}" />
                     <MenuBar Background="Transparent"
                              VerticalAlignment="Center">
@@ -49,6 +54,24 @@
                             <MenuFlyoutItem x:Name="DebugModeItem"
                                             Text="Debug 模式 关"
                                             Click="DebugModeItem_Click" />
+                            <!--
+                                2026-11-03：客户端标识（minecraft:brand）。
+                                mcip.mcyyy.com 的 Tardis 层只给 brand=vanilla 的客户端发 Open Screen，
+                                MCC 默认标识会让服务端界面（/pv、/linggen、砂轮等）永远不弹。
+                                默认 vanilla，可切回 mcc / empty；改完对下一次（重）连生效。
+                            -->
+                            <MenuFlyoutSubItem x:Name="BrandInfoItem"
+                                               Text="客户端标识：vanilla">
+                                <MenuFlyoutItem Text="vanilla（推荐，服务端界面正常）"
+                                                Tag="vanilla"
+                                                Click="BrandInfoItem_Click" />
+                                <MenuFlyoutItem Text="mcc（原版 MCC 标识）"
+                                                Tag="mcc"
+                                                Click="BrandInfoItem_Click" />
+                                <MenuFlyoutItem Text="empty（不发送标识）"
+                                                Tag="empty"
+                                                Click="BrandInfoItem_Click" />
+                            </MenuFlyoutSubItem>
                         </MenuBarItem>
                     </MenuBar>
                 </StackPanel>

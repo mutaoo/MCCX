@@ -41,11 +41,21 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
     private string _serverPort;
     private string _username;
     private string _minecraftVersion;
+
+    /// <summary>客户端标识：0 跟随全局 / 1 vanilla / 2 mcc / 3 empty（见 MCCConnectionOptions.BrandMode*）。</summary>
+    private int _brandModeIndex;
     private string _commandInput = string.Empty;
     private string _stateText = "未连接";
 
     /// <summary>连接延迟文案（2026-10-08 需求：状态行下方显示当前账号的延迟）。</summary>
     private string _latencyText = "延迟 --";
+
+    /// <summary>血量 / 饥饿文案（2026-10-31 需求：状态区左侧显示，均为 0-20 口径）。</summary>
+    private string _vitalsHealthText = "20/20";
+    private string _vitalsFoodText = "20/20";
+
+    /// <summary>是否已经收到过血量 / 饥饿数据；没有就整块隐藏（0/0 不代表真实状态）。</summary>
+    private bool _showVitals;
 
     /// <summary>延迟探测循环的取消源（连上开、断开停）。</summary>
     private CancellationTokenSource? _latencyCts;
@@ -82,6 +92,7 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
         _serverPort = profile.Port.ToString(CultureInfo.InvariantCulture);
         _username = profile.Username;
         _minecraftVersion = string.IsNullOrWhiteSpace(profile.MinecraftVersion) ? "auto" : profile.MinecraftVersion;
+        _brandModeIndex = Math.Clamp(profile.BrandMode, 0, 3);
         _attackFilterModeIndex = Math.Clamp(profile.AttackFilterMode, 0, 2);
 
         // 各功能参数跟随账号：从账号库回填（老库没有这些字段时保持默认值）
@@ -96,6 +107,8 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
 
         _session.LogReceived += OnLogReceived;
         _session.StateChanged += OnStateChanged;
+        _session.VitalsChanged += OnVitalsChanged;
+        _session.ServerPortChanged += OnServerPortChanged;
         _session.DialogRequested += OnDialogRequested;
         _session.DialogClosed += OnDialogClosed;
         _session.WindowChanged += OnWindowChanged;
@@ -332,6 +345,20 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
         set => SetProperty(ref _minecraftVersion, value);
     }
 
+    /// <summary>
+    /// 客户端标识（2026-11-05 需求：设置里的全局值作为默认，每个账号可单独覆盖）。
+    /// 0 = 跟随全局默认，1 = vanilla，2 = mcc，3 = empty；界面下拉的选中项直接绑这个值。
+    /// </summary>
+    public int BrandModeIndex
+    {
+        get => _brandModeIndex;
+        set
+        {
+            if (SetProperty(ref _brandModeIndex, Math.Clamp(value, 0, 3)))
+                NotifyParametersChanged();
+        }
+    }
+
     public string CommandInput
     {
         get => _commandInput;
@@ -385,6 +412,27 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
     public string StateBadge => _stateText.StartsWith("已连接", StringComparison.Ordinal)
         ? "已连接"
         : _stateText;
+
+    /// <summary>血量文案（“20/20”，半颗心带一位小数，如 “19.5/20”）。</summary>
+    public string VitalsHealthText
+    {
+        get => _vitalsHealthText;
+        private set => SetProperty(ref _vitalsHealthText, value);
+    }
+
+    /// <summary>饥饿文案（“18/20”）。</summary>
+    public string VitalsFoodText
+    {
+        get => _vitalsFoodText;
+        private set => SetProperty(ref _vitalsFoodText, value);
+    }
+
+    /// <summary>是否显示血量 / 饥饿（收到过数据且连接中；断开隐藏）。</summary>
+    public bool ShowVitals
+    {
+        get => _showVitals;
+        private set => SetProperty(ref _showVitals, value);
+    }
 
     public bool IsConnected
     {
@@ -867,7 +915,7 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>
-    /// 自动指令表（2026-10-22 需求）：界面上的每一行。改行内任何值都会经
+    /// 自动指令表（2026-10-22 需求）：界面上的每一行。改行内任何值（含这条自己的执行开关）都会经
     /// <see cref="OnAutoCommandEdited"/> 整份重新下发并落盘。
     /// </summary>
     public ObservableCollection<AutoCommandItem> AutoCommands { get; } = [];
@@ -1266,6 +1314,7 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
                     Port = port,
                     Username = Username,
                     MinecraftVersion = MinecraftVersion,
+                    BrandMode = BrandModeIndex,
                 }).ConfigureAwait(true);
             }
             catch (Exception ex)
@@ -1613,6 +1662,7 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
             ServerHost = host,
             Port = port,
             MinecraftVersion = MinecraftVersion.Trim(),
+            BrandMode = Math.Clamp(BrandModeIndex, 0, 3),
             DisplayName = DisplayName,
             AttackFilterMode = Math.Clamp(AttackFilterModeIndex, 0, 2),
             AttackFilterMobs = [.. SelectedAttackMobs],
@@ -1772,11 +1822,49 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
             {
                 StopLatencyLoop();
                 LatencyText = "延迟 --";
+                ShowVitals = false; // 断开后血量/饥饿没有意义，整块隐藏
 
                 // 断开后服务器命令列表作废（子进程可能已退出），别让旧服的命令建议串到下一次连接
                 if (state == MCCConnectionState.Disconnected)
                     ServerCommands = Array.Empty<string>();
             }
+        });
+    }
+
+    /// <summary>
+    /// 血量 / 饥饿更新（2026-10-31 需求）：任意线程 → UI 线程。
+    /// 两个值都是 MCC 的 0-20 口径：血量半颗心为 0.5，饥饿是整数值。
+    /// </summary>
+    private void OnVitalsChanged(float health, int food)
+    {
+        _dispatcherQueue.TryEnqueue(() =>
+        {
+            if (_disposed)
+                return;
+
+            VitalsHealthText = $"{health.ToString("0.#", CultureInfo.InvariantCulture)}/20";
+            VitalsFoodText = $"{food}/20";
+            ShowVitals = true;
+        });
+    }
+
+    /// <summary>
+    /// 自动重连按 SRV 跟随到新端口（2026-11-04）：任意线程 → UI 线程，
+    /// 更新端口框并写回账号库，免得下次启动又拿旧端口去连。
+    /// </summary>
+    private void OnServerPortChanged(ushort port)
+    {
+        _dispatcherQueue.TryEnqueue(() =>
+        {
+            if (_disposed)
+                return;
+
+            string text = port.ToString(CultureInfo.InvariantCulture);
+            if (string.Equals(ServerPort, text, StringComparison.Ordinal))
+                return;
+
+            ServerPort = text;
+            NotifyParametersChanged();
         });
     }
 
@@ -2005,6 +2093,8 @@ public sealed class AccountViewModel : ObservableObject, IDisposable
         StopLatencyLoop(); // 2026-10-08：关掉延迟探测循环，别让它探着已断开的地址
         _session.LogReceived -= OnLogReceived;
         _session.StateChanged -= OnStateChanged;
+        _session.VitalsChanged -= OnVitalsChanged;
+        _session.ServerPortChanged -= OnServerPortChanged;
         _session.DialogRequested -= OnDialogRequested;
         _session.DialogClosed -= OnDialogClosed;
         _session.WindowChanged -= OnWindowChanged;

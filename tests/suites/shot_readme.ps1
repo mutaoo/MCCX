@@ -15,6 +15,8 @@ using System.Runtime.InteropServices;
 public static class TopHelper {
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT rect);
+    [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hwnd, IntPtr hdc, uint flags);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);
     [DllImport("user32.dll")] public static extern void SwitchToThisWindow(IntPtr h, bool fUnknown);
@@ -110,8 +112,10 @@ function Raise-Mccx {
     Start-Sleep -Milliseconds 400
 }
 
-# 裁剪到 DWM 可见帧（不含不可见 resize 边框与阴影区，避免把窗口后面的
-# 桌面/终端内容裁进来），再内收 6px 消掉圆角外的小三角；光标先挪出窗口避免悬停提示入镜
+# 裁剪到 DWM 可见帧（不含不可见 resize 边框与阴影区），再内收 6px 消掉圆角外的小三角；
+# 光标先挪出窗口避免悬停提示入镜。
+# 2026-11-06：改用 PrintWindow 抓窗口自身绘图——不要求 MCCX 在前台（前台锁被别的程序占住时
+# CopyFromScreen 会拍到别的窗口，脚本只能中止），被遮挡也能抓，和 §8 的抓图约定一致。
 function CropGrab {
     param([string]$Path)
     [void][TopHelper]::SetCursorPos(0, 0)
@@ -120,30 +124,37 @@ function CropGrab {
     $p = Get-Process -Name MCCX -ErrorAction Stop | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
     if (-not $p) { throw '找不到 MCCX 主窗口' }
     $hwnd = $p.MainWindowHandle
-    if ([TopHelper]::GetForegroundWindow() -ne $hwnd) {
-        Raise-Mccx
-        if ([TopHelper]::GetForegroundWindow() -ne $hwnd) {
-            throw ("前台仍不是 MCCX（0x{0:X}），中止" -f [TopHelper]::GetForegroundWindow().ToInt64())
-        }
-    }
+
+    $wr = New-Object TopHelper+RECT
+    if (-not [TopHelper]::GetWindowRect($hwnd, [ref]$wr)) { throw 'GetWindowRect 失败' }
+    $w = $wr.R - $wr.L; $h = $wr.B - $wr.T
+    if ($w -le 100 -or $h -le 100) { throw "窗口尺寸异常: $w x $h" }
+
+    $bmp = New-Object System.Drawing.Bitmap $w, $h
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $hdc = $g.GetHdc()
+    try { $ok = [TopHelper]::PrintWindow($hwnd, $hdc, 3) }
+    finally { $g.ReleaseHdc($hdc); $g.Dispose() }
+    if (-not $ok) { $bmp.Dispose(); throw 'PrintWindow 失败' }
+
+    # 可见帧相对 GetWindowRect 的内缩；拿不到 DWM 尺寸时退回整窗 + 6px 内收
     $rect = New-Object TopHelper+RECT
     $hr = [TopHelper]::DwmGetWindowAttribute($hwnd, [TopHelper]::DWMWA_EXTENDED_FRAME_BOUNDS, [ref]$rect, 16)
     if ($hr -eq 0 -and ($rect.R - $rect.L) -gt 100) {
         $inset = 6
-        $cx = $rect.L + $inset; $cy = $rect.T + $inset
-        $cw = ($rect.R - $rect.L) - 2 * $inset; $ch = ($rect.B - $rect.T) - 2 * $inset
+        $cx = ($rect.L - $wr.L) + $inset
+        $cy = ($rect.T - $wr.T) + $inset
+        $cw = ($rect.R - $rect.L) - 2 * $inset
+        $ch = ($rect.B - $rect.T) - 2 * $inset
     } else {
-        $r = $script:AppRoot.Current.BoundingRectangle
-        $inset = 14
-        $cx = [int]$r.X + $inset; $cy = [int]$r.Y + $inset
-        $cw = [int]$r.Width - 2 * $inset; $ch = [int]$r.Height - 2 * $inset
+        $inset = 6
+        $cx = $inset; $cy = $inset
+        $cw = $w - 2 * $inset; $ch = $h - 2 * $inset
     }
-    if ($cw -le 100 -or $ch -le 100) { throw "裁剪矩形异常: $cw x $ch" }
-    $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-    $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
-    $g = [System.Drawing.Graphics]::FromImage($bmp)
-    $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
-    $g.Dispose()
+    $cx = [Math]::Max(0, [int]$cx); $cy = [Math]::Max(0, [int]$cy)
+    $cw = [Math]::Min([int]$cw, $w - $cx); $ch = [Math]::Min([int]$ch, $h - $cy)
+    if ($cw -le 100 -or $ch -le 100) { $bmp.Dispose(); throw "裁剪矩形异常: $cw x $ch" }
+
     $crop = $bmp.Clone([System.Drawing.Rectangle]::new($cx, $cy, $cw, $ch), $bmp.PixelFormat)
     $bmp.Dispose()
     $crop.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
@@ -213,6 +224,12 @@ function Assert-NoSensitive([string]$Where, [string]$Text) {
 $libFail = $false
 
 try {
+    # ---- 0) 先关掉任何已在运行的 MCCX（含 --runner 子进程） ----
+    # 2026-11-05 踩到：只换库文件不够——Start-App 看到已有实例就直接附着，
+    # 那个旧实例内存里还装着真实账号（列表 13 个），新建的测试号会写进新库，
+    # 列表变成 16 个，截图也会带出真实账号。所以启动前必须清场。
+    Stop-App
+
     # ---- 1) 三处库全部备份（stash + TEMP 双份，MD5 记账）→ 全部成功后才删 ----
     if ($swaps.Count -gt 0) {
         New-Item -ItemType Directory -Path $stashDir -Force | Out-Null
@@ -243,6 +260,12 @@ try {
     Raise-Mccx
     Start-Sleep -Milliseconds 800
 
+    # 空库启动必须真的一个账号都没有：有残留说明旧实例没退干净，立即中止（截图会泄密）
+    $existing = @(Get-ListTexts)
+    if ($existing.Count -ne 0) {
+        throw "空库启动后列表应为空，实际 $($existing.Count) 个（旧实例未退出？）: $($existing -join ' | ')"
+    }
+
     Add-AccountUi -Srv '127.0.0.1' -Port '25599' -User 'TestAlpha' -Shot   # 02：填好测试服务器的添加弹窗
     Add-AccountUi -Srv 'mc.example.com' -Port '25565' -User 'TestBravo'
     Add-AccountUi -Srv 'demo.example.org' -Port '25565' -User 'TestCharlie'
@@ -256,10 +279,10 @@ try {
 
     # ---- 4) 选中 TestAlpha（本地测试服） ----
     # 2026-10-19：原来这里会点「清空日志」把启动日志（含"用户数据目录：<本机路径>"那几行）清掉，
-    # 但 2026-10-16 起命令栏（发送 / 清空日志）与日志搜索**只在连上服务器后显示**，
-    # 离线时截不到那个按钮 —— 改成不需要清：脚本先换掉账号库再启动，**启动时一个账号都没有**，
-    # MainViewModel 那几条启动日志 `first?.WriteNote(...)` 没有账号可写，画面天然干净；
-    # 各账号自己的日志只有一行"已添加账号 …（服务器:端口）。"。
+    # 但 2026-10-16 起命令栏（发送 / 清空日志）只在连上服务器后才可用；2026-11-06 起离线时按钮
+    # 仍在树里但 IsEnabled=False（清不了），所以改成不需要清：脚本先换掉账号库再启动，
+    # **启动时一个账号都没有**，MainViewModel 那几条启动日志 `first?.WriteNote(...)` 没有账号可写，
+    # 画面天然干净；各账号自己的日志只有一行"已添加账号 …（服务器:端口）。"。
     # 下面照样用 UIA 读一遍日志做兜底断言：只要日志里出现盘符路径就中止，绝不让本机路径进截图。
     $list = Find-ById $script:AppRoot 'AccountList'
     $item = Find-ListItemByText $list '^TestAlpha( /|$)'

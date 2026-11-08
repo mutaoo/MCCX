@@ -94,6 +94,12 @@ public sealed class RunnerProcess : IAccountSession
     /// <summary>服务器关掉了编号为该值的容器窗口。</summary>
     public event Action<int>? WindowClosed;
 
+    /// <summary>玩家血量 / 饥饿值（0-20）更新（子进程推过来的）。可能从事件管道线程触发。</summary>
+    public event Action<float, int>? VitalsChanged;
+
+    /// <summary>自动重连按 SRV 跟随到新端口（子进程推过来的）。可能从事件管道线程触发。</summary>
+    public event Action<ushort>? ServerPortChanged;
+
     /// <summary>子进程退出（含崩溃）。参数是进程退出码，取不到时为 -1。</summary>
     public event Action<int>? ProcessExited;
 
@@ -369,6 +375,16 @@ public sealed class RunnerProcess : IAccountSession
                     ServerCommandsChanged?.Invoke(commands);
                 break;
 
+            case RunnerMessage.EvtVitals:
+                if (VitalsInfo.Parse(message.Text) is { } vitals)
+                    VitalsChanged?.Invoke(vitals.Health, vitals.Food);
+                break;
+
+            case RunnerMessage.EvtServerPort:
+                if (ushort.TryParse(message.Text, out ushort serverPort) && serverPort > 0)
+                    ServerPortChanged?.Invoke(serverPort);
+                break;
+
             case RunnerMessage.EvtReady:
             default:
                 break;
@@ -491,6 +507,7 @@ public sealed class RunnerProcess : IAccountSession
                 Port = options.Port,
                 User = options.Username,
                 Version = options.MinecraftVersion,
+                Brand = options.BrandMode,
             });
         }
         catch (Exception ex)

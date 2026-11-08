@@ -4,7 +4,7 @@ obj/
 .vs/
 *.user
 *.suo
-# 便携版发布产物（dotnet publish -o publish，约 166 MB）
+# 便携版发布产物（dotnet publish -o publish）
 publish/
 
 # 运行期日志
@@ -18,7 +18,7 @@ MinecraftClient.ini
 # 本地文档与素材
 other/
 
-# 测试输出（用例日志、临时截图、临时账号库暂存；测试脚本本身要入库）
+# 测试输出
 tests/artifacts/
 accounts-stash/
 

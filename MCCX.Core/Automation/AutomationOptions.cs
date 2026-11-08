@@ -175,6 +175,12 @@ public sealed class AutoCommandDefinition
     /// </summary>
     public int RepeatCount { get; set; }
 
+    /// <summary>
+    /// 这条指令自己的执行开关（每条独立，默认开）：关掉后只停这一条，
+    /// 总开关和其它指令不受影响；"进服立即执行"和定时执行都受它管。
+    /// </summary>
+    public bool Enabled { get; set; } = true;
+
     /// <summary>这条自己的过程日志开关（每条独立，默认开）。</summary>
     public bool LogEnabled { get; set; } = true;
 }

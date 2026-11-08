@@ -184,7 +184,7 @@ internal sealed class ViewControlBot : ChatBot
     /// </summary>
     public void AnnounceStatus()
     {
-        LogToConsole($"§8[视角] 进服沿用服务器记住的朝向（与 MCC 一致）；进服头 {GuardTicks / 20} 秒内若被服务器纠正包改走会自动钉回；「视角移动」按钮照常可用。");
+        LogToConsole($"§8[视角] 进服沿用服务器记住的朝向；进服头 {GuardTicks / 20} 秒内若被服务器纠正包改走会自动钉回。");
     }
 
     /// <summary>账号 id：SyncView 认领旧实例时用来确认是同一账号的 Bot。</summary>
@@ -243,7 +243,7 @@ internal sealed class ViewControlBot : ChatBot
         // 进服朝向报告（只报一次，见 _joinReportTicks）：现场再遇到"进服朝南"时，
         // 这行能直接回答"服务器发来的就是南"还是"发来之后被改成了南"，不必再插桩重跑。
         if (_joinReportTicks >= 0 && --_joinReportTicks < 0)
-            LogToConsole($"§8[视角] 进服后客户端朝向 yaw {GetYaw():0.#}（服务器记住的朝向；此后 {GuardTicks / 20} 秒内若被纠正包改走会自动钉回）。");
+            LogToConsole($"§8[视角] 进服后客户端朝向 yaw {GetYaw():0.#}（服务器记住的朝向；此后 {GuardTicks / 20} 秒内若被服务器纠正包改走会自动钉回）。");
 
         // 0) 界面点的"视角移动"：落地并进入保持期
         if (_pendingLook is { } wanted)
@@ -293,7 +293,7 @@ internal sealed class ViewControlBot : ChatBot
                 _guardSummaryLogged = true;
                 LogToConsole(_guardPinCount == 1
                     ? $"§8[视角] 守卫窗口结束：期间钉回 1 次（服务器只纠正了一次，视角保持 yaw {_guardYaw:0.#}）。"
-                    : $"§8[视角] 守卫窗口结束：期间钉回 {_guardPinCount} 次（服务器在持续纠正；若之后视角又变南，说明 {GuardTicks / 20} 秒窗口不够长）。");
+                    : $"§8[视角] 守卫窗口结束：期间钉回 {_guardPinCount} 次（{GuardTicks / 20} 秒窗口结束）。");
             }
 
             return;
@@ -346,7 +346,7 @@ internal sealed class ViewControlBot : ChatBot
 
             _guardYaw = candidate;
             _guardPitch = fromSample ? _guardFirstPitch : _joinPitch;
-            LogToConsole($"§8[视角] 守卫锚定 yaw {_guardYaw:0.#}（服务器记住的朝向；{GuardTicks / 20} 秒窗口内被改走会自动钉回，除非使用会改变视角的Bot）。");
+            LogToConsole($"§8[视角] 守卫锚定 yaw {_guardYaw:0.#}（持续守卫此朝向 {GuardTicks / 20} 秒）。");
             return;
         }
 

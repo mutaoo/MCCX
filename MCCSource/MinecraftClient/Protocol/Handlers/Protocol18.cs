@@ -2499,7 +2499,7 @@ namespace MinecraftClient.Protocol.Handlers
                         if (protocolVersion >= MC_1_17_1_Version) // Carried Item - 1.17.1 and above
                             dataTypes.ReadNextItemSlot(packetData, itemPalette);
 
-                        handler.OnWindowItems(windowId, inventorySlots, stateId);
+                        handler.OnWindowItems(windowId, inventorySlots, stateId, elements);
                     }
 
                     break;

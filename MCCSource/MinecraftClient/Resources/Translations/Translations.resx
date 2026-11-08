@@ -1901,6 +1901,12 @@ You can use "/chunk status {0:0.0} {1:0.0} {2:0.0}" to check the chunk loading s
   <data name="extra.inventory_interact" xml:space="preserve">
     <value>Use /inventory to interact with it.</value>
   </data>
+  <data name="extra.inventory_missing_open" xml:space="preserve">
+    <value>Window # {0} arrived without an open packet; the server's screen was reset. Please retry the command.</value>
+  </data>
+  <data name="extra.inventory_missing_open_restored" xml:space="preserve">
+    <value>Window # {0} arrived without an open packet; the screen was restored from its slot count. Close it to reset the server's screen.</value>
+  </data>
   <data name="extra.inventory_open" xml:space="preserve">
     <value>Inventory # {0} opened: {1}</value>
   </data>

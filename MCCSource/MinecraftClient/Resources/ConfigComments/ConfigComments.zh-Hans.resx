@@ -983,7 +983,7 @@ Recipes.Slots：合成的物品摆放方式，以从左到右、从上到下的�
     <value>Authlib-injector URL to use for Yggdrasil accounts. It must use http or https and include any required path.</value>
   </data>
   <data name="AuthlibServer.Host" xml:space="preserve">
-    <value>域名或 IP 地址</value>
+    <value>域名 或 IP 地址</value>
   </data>
   <data name="AuthlibServer.Port" xml:space="preserve">
     <value>要连接的端口</value>

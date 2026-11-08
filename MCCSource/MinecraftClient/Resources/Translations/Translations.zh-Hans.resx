@@ -1897,6 +1897,12 @@
   <data name="extra.inventory_interact" xml:space="preserve">
     <value>请使用 /inventory 来与其交互。</value>
   </data>
+  <data name="extra.inventory_missing_open" xml:space="preserve">
+    <value>窗口# {0} 没收到打开界面的包，已让服务端把它关掉，请重试指令。</value>
+  </data>
+  <data name="extra.inventory_missing_open_restored" xml:space="preserve">
+    <value>窗口# {0} 没收到打开界面的包，已按槽位数补出界面；关掉它即可让服务端恢复。</value>
+  </data>
   <data name="extra.inventory_open" xml:space="preserve">
     <value>容器# {0}已开启：{1}</value>
   </data>

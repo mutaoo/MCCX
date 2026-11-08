@@ -6,7 +6,8 @@ namespace MCCX_App.ViewModels;
 
 /// <summary>
 /// 自动指令列表里的一条（2026-10-22 用户需求）：界面直接编辑，
-/// 改一个字 / 改间隔 / 改执行方式与次数 / 拨"进服立即执行"或"日志"都会回调外层重新下发并落盘。
+/// 改一个字 / 改间隔 / 改执行方式与次数 / 拨这条自己的执行开关、"进服立即执行"或"日志"
+/// 都会回调外层重新下发并落盘。
 /// <para>
 /// 间隔在界面上是字符串（输入框），空/非法时按默认 60 秒算；
 /// 真正的夹取（1 秒 ~ 24 小时、次数 0 ~ 100 万）在 <see cref="AutoCommandBot.SetCommands"/> 里再做一次，
@@ -22,6 +23,7 @@ public sealed class AutoCommandItem : ObservableObject
     private bool _runOnJoin;
     private bool _loop;
     private string _repeatCount;
+    private bool _enabled;
     private bool _logEnabled;
 
     public AutoCommandItem(AutoCommandDefinition definition, Action changed)
@@ -37,6 +39,7 @@ public sealed class AutoCommandItem : ObservableObject
         _repeatCount = definition.RepeatCount > 0
             ? definition.RepeatCount.ToString(CultureInfo.InvariantCulture)
             : string.Empty;
+        _enabled = definition.Enabled;
         _logEnabled = definition.LogEnabled;
     }
 
@@ -104,6 +107,17 @@ public sealed class AutoCommandItem : ObservableObject
     /// <summary>"次数"输入框只在循环执行时显示（只执行一次固定 1 次，没有可填的）。</summary>
     public Visibility RepeatVisibility => _loop ? Visibility.Visible : Visibility.Collapsed;
 
+    /// <summary>这条指令自己的执行开关（关掉只停这一条，总开关和其它指令不受影响）。</summary>
+    public bool Enabled
+    {
+        get => _enabled;
+        set
+        {
+            if (SetProperty(ref _enabled, value))
+                _changed();
+        }
+    }
+
     /// <summary>这条指令自己的过程日志开关（每条独立）。</summary>
     public bool LogEnabled
     {
@@ -123,6 +137,7 @@ public sealed class AutoCommandItem : ObservableObject
         RunOnJoin = RunOnJoin,
         Loop = _loop,
         RepeatCount = _loop ? ParseRepeatCount(RepeatCount) : 0,
+        Enabled = Enabled,
         LogEnabled = LogEnabled,
     };
 

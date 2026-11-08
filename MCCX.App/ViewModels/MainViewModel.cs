@@ -29,9 +29,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         nameof(ServerPort),
         nameof(Username),
         nameof(MinecraftVersion),
+        nameof(BrandModeIndex),
         nameof(CommandInput),
         nameof(StateText),
         nameof(LatencyText),
+        nameof(VitalsHealthText),
+        nameof(VitalsFoodText),
+        nameof(ShowVitals),
         nameof(IsConnected),
         nameof(CanEditConnection),
         nameof(AttackEnabled),
@@ -350,6 +354,17 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    /// <summary>客户端标识（0 跟随全局 / 1 vanilla / 2 mcc / 3 empty），按账号存。</summary>
+    public int BrandModeIndex
+    {
+        get => Pick(a => a.BrandModeIndex, MCCConnectionOptions.BrandModeFollowGlobal);
+        set
+        {
+            if (SelectedAccount is { } account)
+                account.BrandModeIndex = value;
+        }
+    }
+
     public string CommandInput
     {
         get => Pick(a => a.CommandInput, string.Empty);
@@ -364,6 +379,15 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     /// <summary>选中账号的连接延迟（2026-10-08 需求：状态行下方显示当前账号的延迟）。</summary>
     public string LatencyText => Pick(a => a.LatencyText, "延迟 --");
+
+    /// <summary>选中账号的血量文案（2026-10-31 需求：状态区左侧显示）。</summary>
+    public string VitalsHealthText => Pick(a => a.VitalsHealthText, "20/20");
+
+    /// <summary>选中账号的饥饿文案。</summary>
+    public string VitalsFoodText => Pick(a => a.VitalsFoodText, "20/20");
+
+    /// <summary>选中账号是否显示血量/饥饿（没收到过数据或未连接时隐藏）。</summary>
+    public bool ShowVitals => Pick(a => a.ShowVitals, false);
 
     public bool IsConnected => Pick(a => a.IsConnected, false);
 
@@ -1286,8 +1310,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             m.Right.Enabled, m.Right.Mode, m.Right.HoldMs, m.Right.IntervalMs, m.Right.JitterPercent,
             p.FishingEnabled, f.SoundDetection, f.VelocityDetection, f.TimeoutSeconds, f.CastDelaySeconds,
             p.AutoRefillEnabled, p.AutoWalkEnabled, p.ServerFilterMode, p.ServerFilterShowPrefix, p.ServerFilterBlockPrefix,
+            // 客户端标识（2026-11-05）：漏了会让"只改标识"被节流判定成没变化而不落盘
+            p.BrandMode,
             r.Enabled, r.MaxAttempts, r.DelayMs,
-            // 自动指令（2026-10-22）：开关 + 每条（文本/间隔/进服立即执行/循环-只执行一次/次数/日志），
+            // 自动指令（2026-10-22）：开关 + 每条（文本/间隔/进服立即执行/循环-只执行一次/次数/启用/日志），
             // 顺序也要进签名——否则"只调换了两条的顺序"会被节流判定成没变化。
             // 2026-10-22 第二轮踩的坑：漏了 Loop/RepeatCount/LogEnabled，只动"每条日志开关"或
             // "执行方式/次数"时签名不变 → OnAccountParametersChanged 走"值没变"提前返回 → 不落盘，
@@ -1298,7 +1324,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             p.ServerPassword is null ? 0 : p.ServerPassword.GetHashCode(),
             p.AutoCommandsEnabled,
             string.Join(';', (p.AutoCommands ?? []).Select(c =>
-                $"{c.Text}~{c.IntervalSeconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)}~{c.RunOnJoin}~{c.Loop}~{c.RepeatCount}~{c.LogEnabled}")),
+                $"{c.Text}~{c.IntervalSeconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)}~{c.RunOnJoin}~{c.Loop}~{c.RepeatCount}~{c.Enabled}~{c.LogEnabled}")),
             // 功能日志开关：字典按键排序，保证同一份配置永远得到同一串签名，
             // 否则"关掉日志开关"可能被节流判定成"没变化"而不落盘。
             string.Join(',', p.FeatureLogSwitches.OrderBy(kv => kv.Key, StringComparer.Ordinal)

@@ -57,6 +57,13 @@ namespace MinecraftClient
         private static readonly List<ChatBot> botsOnHold = new();
         private static readonly Dictionary<int, Container> inventories = new();
         private static readonly HashSet<int> inventoriesWithFullContents = new();
+
+        /// <summary>
+        /// 没收到"打开窗口"包、已经让服务端关掉的窗口（同一个窗口只发一次关闭包，避免反复刷）。
+        /// 见 <see cref="RecoverWindowWithoutOpenPacket"/>。
+        /// </summary>
+        private readonly HashSet<int> missingOpenWindows = new();
+
         private readonly Dictionary<string, RecipeBookRecipeEntry> unlockedRecipes = new(StringComparer.Ordinal);
         private readonly Dictionary<string, Achievement> achievements = new(StringComparer.Ordinal);
         private string? activeAdvancementTab;
@@ -164,6 +171,16 @@ namespace MinecraftClient
         public bool GetIsSupportPreviewsChat() { return isSupportPreviewsChat; }
         public float GetHealth() { return playerHealth; }
         public int GetSaturation() { return playerFoodSaturation; }
+
+        /// <summary>
+        /// MCCX 2026-10-31：是否收到过 UpdateHealth 包。
+        /// <c>GetHealth()</c> 在收到首个包之前也是 0，单看数值分不清"没数据"和"血量 0"，
+        /// 界面要靠它决定血量/饥饿显示是否可见。
+        /// </summary>
+        public bool HasHealthData { get; private set; }
+
+        /// <summary>MCCX 2026-10-31：血量 / 饥饿值（都是 0-20）变化。可能从网络线程触发。</summary>
+        public event Action<float, int>? HealthUpdated;
 
         /// <summary>
         /// Get the player's active effects
@@ -3004,18 +3021,18 @@ namespace MinecraftClient
             if (InvokeRequired)
                 return InvokeOnMainThread(() => CloseInventory(windowId));
 
-            if (inventories.ContainsKey(windowId))
+            // MCCX 2026-11-03: 本地容器表里有没有这个窗口，都要把关闭包发给服务端。
+            // 服务端只认它自己的"界面开着"状态；客户端一旦因为 Respawn / 换维度触发
+            // ClearInventories 把本地容器清掉，原来的 ContainsKey 判断就会让关闭包永远
+            // 发不出去，服务端随后对所有指令回"打开界面时无法执行指令"，只能重连恢复。
+            if (windowId != 0)
             {
-                if (windowId != 0)
-                {
-                    inventories.Remove(windowId);
-                    inventoriesWithFullContents.Remove(windowId);
-                }
-                bool result = handler.SendCloseWindow(windowId);
-                DispatchBotEvent(bot => bot.OnInventoryClose(windowId));
-                return result;
+                inventories.Remove(windowId);
+                inventoriesWithFullContents.Remove(windowId);
             }
-            return false;
+            bool result = handler.SendCloseWindow(windowId);
+            DispatchBotEvent(bot => bot.OnInventoryClose(windowId));
+            return result;
         }
 
         /// <summary>
@@ -3032,6 +3049,7 @@ namespace MinecraftClient
 
             inventories.Clear();
             inventoriesWithFullContents.Clear();
+            missingOpenWindows.Clear();
             inventories[0] = new Container(0, ContainerType.PlayerInventory, "Player Inventory");
             ClearUnlockedRecipes();
             return true;
@@ -3879,6 +3897,7 @@ namespace MinecraftClient
         {
             inventoriesWithFullContents.Remove(inventoryID);
             inventories[inventoryID] = inventory;
+            missingOpenWindows.Remove(inventoryID);
 
             if (inventoryID != 0)
             {
@@ -3901,6 +3920,8 @@ namespace MinecraftClient
         /// <param name="inventoryID">Inventory ID</param>
         public void OnInventoryClose(int inventoryID)
         {
+            missingOpenWindows.Remove(inventoryID);
+
             if (inventories.ContainsKey(inventoryID))
             {
                 if (inventoryID == 0)
@@ -4034,8 +4055,15 @@ namespace MinecraftClient
         /// </summary>
         /// <param name="inventoryID">Inventory ID</param>
         /// <param name="itemList">Item list, key = slot ID, value = Item information</param>
-        public void OnWindowItems(byte inventoryID, Dictionary<int, Inventory.Item> itemList, int stateId)
+        /// <param name="stateId">State ID</param>
+        /// <param name="totalSlots">Total slot count announced by the server (window + player inventory)</param>
+        public void OnWindowItems(byte inventoryID, Dictionary<int, Inventory.Item> itemList, int stateId, int totalSlots)
         {
+            // 没收到打开包、也补不出布局的窗口：内容不用处理（关闭包已经发过了）
+            if (!inventories.ContainsKey(inventoryID) && inventoryID != 0
+                && !RecoverWindowWithoutOpenPacket(inventoryID, totalSlots))
+                return;
+
             if (inventories.ContainsKey(inventoryID))
             {
                 // Filter out empty items (Count=0 or Air) that some servers may send
@@ -4050,6 +4078,55 @@ namespace MinecraftClient
                     DispatchBotEvent(bot => bot.OnInventoryUpdate(0));
                 DispatchBotEvent(bot => bot.OnInventoryUpdate(inventoryID));
             }
+        }
+
+        /// <summary>
+        /// MCCX 2026-11-03: 服务端（多版本中间层）偶尔只发窗口内容、不发"打开窗口"包。
+        /// 客户端因此看不到这个窗口，服务端却认为界面开着，之后所有要开界面的指令都被拒
+        /// （"打开界面时无法执行指令!"），只能重连才能恢复。
+        ///
+        /// <para>这里按服务端给的槽位数把窗口补出来（标题为空，界面自己兜底），界面能显示、
+        /// 也能正常关掉；槽位数看不出布局（45 格及以下可能是 3x3、漏斗等）就不猜，
+        /// 直接把这个只存在于服务端的窗口关掉，让服务端恢复。</para>
+        /// </summary>
+        /// <returns>补出了窗口返回 true（内容照常填），否则返回 false。</returns>
+        private bool RecoverWindowWithoutOpenPacket(byte inventoryID, int totalSlots)
+        {
+            ContainerType type = InferContainerType(totalSlots);
+
+            if (type == ContainerType.Unknown)
+            {
+                if (missingOpenWindows.Add(inventoryID))
+                {
+                    Log.Info(string.Format(Translations.extra_inventory_missing_open, inventoryID));
+                    CloseInventory(inventoryID);
+                }
+
+                return false;
+            }
+
+            missingOpenWindows.Remove(inventoryID);
+            inventories[inventoryID] = new Container(inventoryID, type, string.Empty);
+            Log.Info(string.Format(Translations.extra_inventory_missing_open_restored, inventoryID));
+            DispatchBotEvent(bot => bot.OnInventoryOpen(inventoryID));
+            return true;
+        }
+
+        /// <summary>
+        /// 槽位数 → 容器布局。只认能唯一确定的 9xN（N ≥ 2）：54/63/72/81/90 格分别对应 9x2..9x6。
+        /// 45 格既可能是 9x1 也可能是 3x3 / 铸炼台，认不出就返回 <see cref="ContainerType.Unknown"/>。
+        /// </summary>
+        private static ContainerType InferContainerType(int totalSlots)
+        {
+            return totalSlots switch
+            {
+                54 => ContainerType.Generic_9x2,
+                63 => ContainerType.Generic_9x3,
+                72 => ContainerType.Generic_9x4,
+                81 => ContainerType.Generic_9x5,
+                90 => ContainerType.Generic_9x6,
+                _ => ContainerType.Unknown,
+            };
         }
 
         /// <summary>
@@ -4574,6 +4651,8 @@ namespace MinecraftClient
         {
             playerHealth = health;
             playerFoodSaturation = food;
+            HasHealthData = true;
+            HealthUpdated?.Invoke(health, food);
 
             if (health <= 0)
             {

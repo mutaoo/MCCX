@@ -13,6 +13,7 @@ using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Data;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Animation;
 using Microsoft.UI.Xaml.Shapes;
 using Windows.Foundation;
 using Windows.System;
@@ -28,6 +29,27 @@ namespace MCCX_App;
 public sealed partial class MainPage : Page
 {
     public MainViewModel ViewModel { get; }
+
+    /// <summary>日志搜索框当前是否处于“离线展开到命令输入框”状态（2026-11-06）。</summary>
+    private bool _searchExpanded = true;
+
+    /// <summary>展开/收起动画是否正在跑（跑的时候别再叠一条新动画）。</summary>
+    private bool _searchAnimating;
+
+    /// <summary>首帧布局完成后才允许按命令输入框的实际位置摆放搜索框。</summary>
+    private bool _searchLayoutReady;
+
+    /// <summary>连上时搜索框宽度 =「发送 + 清空日志」+ 中间那个列间距。</summary>
+    private double _searchConnectedWidth;
+
+    private Storyboard? _searchLayoutStoryboard;
+
+    /// <summary>搜索框在 XAML 里的默认边框/圆角，收起时按这份值恢复（展开态会改边框/圆角）。</summary>
+    private Thickness _searchBoxDefaultBorderThickness;
+    private CornerRadius _searchBoxDefaultCornerRadius;
+
+    /// <summary>展开/收起动画时长（用户要求“逐渐展开”，太快会像直接跳过去）。</summary>
+    private const double SearchTransitionMilliseconds = 240;
 
     public MainPage()
     {
@@ -65,6 +87,10 @@ public sealed partial class MainPage : Page
 
         // 过滤浮层里两个前缀框的互斥显隐（初始按当前账号的方式摆一次）
         SyncServerFilterRows();
+
+        // 离线时命令栏只保留布局、不上屏：右下角日志搜索框要展开到整条命令区（2026-11-06）。
+        _searchExpanded = !ViewModel.IsConnected;
+        SyncCommandBarForConnection();
     }
 
     /// <summary>
@@ -243,20 +269,25 @@ public sealed partial class MainPage : Page
             SyncServerFilterRows();
         }
 
-        // 命令栏和日志搜索框跟着 IsConnected 显隐（x:Bind 绑的 Visibility）。
+        // 命令栏与日志搜索框跟着 IsConnected 换位置（2026-11-06 用户要求）：
+        // 连上 = 命令栏出现、搜索框收回日志区右下角；断开 = 命令栏只留布局，
+        // 搜索框逐渐展开到整条命令区（宽度覆盖整行，高度与命令输入框一致）。
         if (e.PropertyName == nameof(MainViewModel.IsConnected))
         {
+            _searchExpanded = !ViewModel.IsConnected;
+            ApplySearchBoxPresentation(_searchExpanded);
+
             if (ViewModel.IsConnected)
             {
-                // 刚连上时这一刻按钮还没量到宽度，排到下一轮布局之后再算一次搜索框宽度，
-                // 免得它带着收起期间的空宽度露出来。
-                DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, UpdateSearchFieldWidth);
+                SyncCommandBarForConnection();
+                UpdateSearchFieldWidth();
+                // 收回右下角也走动画（2026-11-06 用户要求）；宽/位移与展开共用同一条 Storyboard。
+                SetSearchLayout(expanded: false, animate: true);
             }
             else
             {
-                // 断开后搜索框整块收起；要是留着上一次的搜索词，日志会一直只显示命中的那几行，
-                // 而用户已经找不到清空它的入口了。所以断开时顺手清掉搜索（清空会走
-                // LogSearchBox_TextChanged 那条链路，把日志恢复成全量）。
+                // 断开后搜索框仍然可用；清掉上一次的搜索词，否则日志会一直只显示命中的那几行，
+                // 而命令栏已经收起，用户找不到清空它的入口。
                 if (!string.IsNullOrEmpty(LogSearchBox.Text))
                     LogSearchBox.Text = string.Empty;
 
@@ -266,7 +297,19 @@ public sealed partial class MainPage : Page
                 // 断开后容器窗口已经不存在了（服务器不会再发关窗包），面板必须自己收掉，
                 // 否则会留着一份点不动的旧格子。
                 CloseContainerPanel(sendClose: false);
+
+                // 先切到“命令栏透明但仍在布局里”的状态，再按它的实际位置展开搜索框。
+                SyncCommandBarForConnection();
+                SetSearchLayout(expanded: true, animate: true);
             }
+
+            // 搜索框显隐/位置会改它自己的高度：等这一轮布局完成后再把独立滚动条的上下边距重算一遍。
+            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+            {
+                UpdateLogScrollBarInsets();
+                if (_logScrollViewer is { } scroll)
+                    SyncLogScrollBar(scroll);
+            });
         }
     }
 
@@ -363,6 +406,9 @@ public sealed partial class MainPage : Page
     private void OnPageLoaded(object sender, RoutedEventArgs e)
     {
         _logScrollViewer ??= ResolveLogScrollHost();
+
+        // 命令栏 / 日志搜索框的初始位置（离线时搜索框展开覆盖整条命令区，见 2026-11-06 需求）
+        InitializeSearchLayout();
 
         // 首次打开也要落在最新一行，不能停在开机那几条老日志上
         ForceScrollLogToEnd();
@@ -516,6 +562,139 @@ public sealed partial class MainPage : Page
     }
 
     /// <summary>
+    /// 命令栏 / 日志搜索框的联动（2026-11-06 用户要求）：
+    /// 连上时命令栏正常显示、搜索框贴日志区右下角；断开后命令栏**只保留布局**（透明度 0、不可点），
+    /// 搜索框从右下角**逐渐展开到整条命令区**（宽度覆盖整行，高度与命令输入框一致）。
+    ///
+    /// 为什么命令栏不直接 Visibility=Collapsed：收起后子控件量不到宽度，搜索框就没法对齐到
+    /// “整条命令区”这个目标，而且那一行高度会塌掉、展开位置也跟着变。留布局不显示是最稳的做法
+    /// （UIA 里这些控件仍在，只是 disabled；2026-11-06 起测试按 IsEnabled 判断）。
+    /// </summary>
+    private void SyncCommandBarForConnection()
+    {
+        bool connected = ViewModel.IsConnected;
+        CommandBarGrid.Opacity = connected ? 1 : 0;
+        CommandBarGrid.IsHitTestVisible = connected;
+
+        // Panel 没有 IsEnabled，逐个控件禁掉：禁用后 Tab 不会再落进这些看不见的控件。
+        FrequentCommandsButton.IsEnabled = connected;
+        CommandBox.IsEnabled = connected;
+        SendButton.IsEnabled = connected;
+        ClearLogButton.IsEnabled = connected;
+    }
+
+    /// <summary>记下 XAML 里的默认边框/圆角，收起时恢复（只调用一次）。背景不缓存，见 ApplySearchBoxPresentation。</summary>
+    private void CaptureSearchBoxDefaults()
+    {
+        _searchBoxDefaultBorderThickness = LogSearchBox.BorderThickness;
+        _searchBoxDefaultCornerRadius = LogSearchBox.CornerRadius;
+    }
+
+    /// <summary>
+    /// 展开态外观（2026-11-06 用户要求）：只留底边框、去掉上/左/右边框与圆角，背景透明——
+    /// 展开时搜索框落在命令栏那一行，底下没有日志文字，透明才能真的只看见一条底线。
+    /// 输入为空时用居中的 <see cref="LogSearchHintPanel"/> 代替 TextBox 自带的左对齐占位。
+    ///
+    /// 2026-11-07（用户要求"点击框后不要白底、和日志区的颜色一致"）：TextBox 模板在指针悬停 /
+    /// 获得焦点时会用主题资源重新设置背景和边框（本地 Background 会被状态 Storyboard 盖掉，
+    /// 一点就变白底、四边边框也回来了）。所以展开时把 <c>TextControlBackground*</c> 也覆盖成透明、
+    /// 焦点边框厚度仍只留底边；收起时再把这些资源键删掉，恢复原生外观。
+    /// </summary>
+    private void ApplySearchBoxPresentation(bool expanded)
+    {
+        if (expanded)
+        {
+            LogSearchBox.BorderThickness = new Thickness(0, 0, 0, 1);
+            LogSearchBox.CornerRadius = new CornerRadius(0);
+            LogSearchBox.Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+            // 原生 PlaceholderText 只能左对齐，展开态改用居中提示层，避免两个占位同时出现。
+            LogSearchBox.PlaceholderText = string.Empty;
+
+            var transparent = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+            LogSearchBox.Resources["TextControlBackground"] = transparent;
+            LogSearchBox.Resources["TextControlBackgroundPointerOver"] = transparent;
+            LogSearchBox.Resources["TextControlBackgroundFocused"] = transparent;
+            LogSearchBox.Resources["TextControlBorderThemeThicknessFocused"] = new Thickness(0, 0, 0, 1);
+        }
+        else
+        {
+            LogSearchBox.BorderThickness = _searchBoxDefaultBorderThickness;
+            LogSearchBox.CornerRadius = _searchBoxDefaultCornerRadius;
+            // 2026-11-07（用户反馈"暗色模式搜索框配色异常"）：不能把启动时抓到的 Background
+            // 再赋回去——那是 ThemeResource 已经解析成的**具体画刷**（浅色主题下就是浅灰）。
+            // 运行中切暗色时主题资源会重新求值，可这个本地值把它钉死了，所以框一直是浅色。
+            // 清掉本地值，让 TextBox 模板里的 TextControlBackground 重新按当前主题取色。
+            LogSearchBox.ClearValue(Control.BackgroundProperty);
+            LogSearchBox.PlaceholderText = "搜索日志";
+
+            LogSearchBox.Resources.Remove("TextControlBackground");
+            LogSearchBox.Resources.Remove("TextControlBackgroundPointerOver");
+            LogSearchBox.Resources.Remove("TextControlBackgroundFocused");
+            LogSearchBox.Resources.Remove("TextControlBorderThemeThicknessFocused");
+        }
+
+        UpdateSearchChrome();
+    }
+
+    /// <summary>
+    /// 搜索框里的图标 / 占位 / 左内边距跟着「展开与否 + 有没有输入」切换：
+    ///   展开 + 空 = 居中提示层（放大镜 + 搜索日志），左侧原生图标隐藏、Padding 收平；
+    ///   展开 + 有字 = 只留文字，从左边开始；
+    ///   收起 + 空 = 原来的左图标 + 占位、Padding 左 26；
+    ///   收起 + 有字 = 图标收起、Padding 左 4。
+    /// </summary>
+    private void UpdateSearchChrome()
+    {
+        bool empty = string.IsNullOrEmpty(LogSearchBox.Text);
+
+        if (_searchExpanded)
+        {
+            LogSearchHintPanel.Visibility = empty ? Visibility.Visible : Visibility.Collapsed;
+            LogSearchGlyph.Visibility = Visibility.Collapsed;
+            LogSearchBox.Padding = new Thickness(4, 4, 4, 0);
+        }
+        else
+        {
+            LogSearchHintPanel.Visibility = Visibility.Collapsed;
+            LogSearchGlyph.Visibility = empty ? Visibility.Visible : Visibility.Collapsed;
+            LogSearchBox.Padding = empty ? new Thickness(26, 4, 4, 0) : new Thickness(4, 4, 4, 0);
+        }
+
+        // 展开/收回时徽标的贴法不一样（展开态上方、收起态左侧），跟着状态一起重算。
+        UpdateSearchCountBadgeOffset();
+    }
+
+    /// <summary>首帧布局完成后调用一次：离线直接把搜索框摆到整条命令区的位置，不播动画。</summary>
+    private void InitializeSearchLayout()
+    {
+        _searchExpanded = !ViewModel.IsConnected;
+        CaptureSearchBoxDefaults();
+        ApplySearchBoxPresentation(_searchExpanded);
+        SyncCommandBarForConnection();
+
+        if (_searchExpanded)
+        {
+            SetSearchLayout(expanded: true, animate: false);
+        }
+        else
+        {
+            UpdateSearchFieldWidth();
+            SetSearchLayout(expanded: false, animate: false);
+        }
+
+        _searchLayoutReady = true;
+        UpdateLogScrollBarInsets();
+
+        // Loaded 那一刻个别情况下还没量到命令栏宽度（例如启动时没有选中账号），
+        // 排到下一轮布局后再摆一次，避免搜索框停在右下角的小尺寸上。
+        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        {
+            if (_searchExpanded && _searchLayoutReady)
+                SetSearchLayout(expanded: true, animate: false);
+        });
+    }
+
+    /// <summary>
     /// 2026-10-16 用户要求"日志搜索框和 发送 + 清空日志 两个按钮加起来同宽"（整列对齐更整齐）：
     /// 按钮宽度由内容/字体/缩放决定，所以量它们的实际宽度现算，命令栏一重排（改字号、换 DPI）就跟着重算。
     /// 搜索框在日志区右下角、命令栏在它正下方，两者都靠右且同宽，右列就对齐了。
@@ -524,20 +703,175 @@ public sealed partial class MainPage : Page
     /// </summary>
     private void CommandBarGrid_SizeChanged(object sender, SizeChangedEventArgs e)
     {
-        UpdateSearchFieldWidth();
+        if (ViewModel.IsConnected)
+        {
+            UpdateSearchFieldWidth();
+            // 收回动画正在跑时别用“立即摆放”把它打断（连接瞬间命令栏显隐可能触发一次 SizeChanged）。
+            if (!_searchExpanded && !_searchAnimating)
+                SetSearchLayout(expanded: false, animate: false);
+        }
+        else if (_searchExpanded && _searchLayoutReady)
+        {
+            // 离线时窗口缩放：展开态也要继续贴着命令区的新位置。
+            SetSearchLayout(expanded: true, animate: false);
+        }
+    }
+
+    /// <summary>日志区尺寸变化（切账号显隐、窗口缩放）时，离线展开态重新贴合命令区。</summary>
+    private void LogAreaGrid_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (_searchExpanded && _searchLayoutReady)
+            SetSearchLayout(expanded: true, animate: false);
     }
 
     /// <summary>
     /// 把右下角搜索框的宽度算成"发送 + 清空日志"两个按钮的合计宽度。
-    /// 命令栏收起时（未连接）两个按钮的实际宽度都是 0，这时不写——否则会把上一次量到的宽度抹成 0；
-    /// 连上后命令栏重新显示会再触发一次 SizeChanged，见 <see cref="OnViewModelPropertyChanged"/>。
+    /// 离线展开时宽度由整个命令区决定，这里只记下连上/收起时要用的宽度，由 <see cref="SetSearchLayout"/> 统一写入
+    /// （避免先直接改 Width、再播动画时起点被提前覆盖）。
     /// </summary>
     private void UpdateSearchFieldWidth()
     {
         double width = SendButton.ActualWidth + CommandBarGrid.ColumnSpacing + ClearLogButton.ActualWidth;
-        if (width > 0)
-            LogSearchField.Width = width;
+        if (width <= 0)
+            return;
+
+        _searchConnectedWidth = width;
     }
+
+    /// <summary>
+    /// 摆放搜索框：<paramref name="expanded"/> = 断开后的展开态。
+    /// 展开目标 = 整个命令区（宽度覆盖「常用命令 → 清空日志」整行，纵向对齐命令输入框；
+    /// 用 <see cref="UIElement.TransformToVisual"/> 量，DPI/主题/窗口宽度都不写死）；
+    /// 收起目标 = 日志区右下角、宽度与「发送 + 清空日志」同宽。
+    /// 只动 <see cref="LogSearchField"/> 的 Width 和整块搜索区的 TranslateTransform，不改布局槽位。
+    /// </summary>
+    private void SetSearchLayout(bool expanded, bool animate)
+    {
+        double targetWidth;
+        double targetX = 0;
+        double targetY = 0;
+
+        if (expanded)
+        {
+            if (!TryGetCommandAreaRect(out Rect target) || !TryGetCommandInputRect(out Rect input))
+                return;
+
+            targetWidth = target.Width;
+            // 搜索框整块右对齐在日志区右边：右边缘先对齐命令区右边缘，宽度相同后左边缘自然对齐。
+            targetX = target.Right - LogAreaGrid.ActualWidth;
+            // 纵向仍以命令输入框顶边为准，底边框落在输入框那条线上。
+            targetY = input.Top - (LogAreaGrid.ActualHeight - LogSearchHost.ActualHeight - 2);
+        }
+        else
+        {
+            targetWidth = _searchConnectedWidth;
+        }
+
+        if (targetWidth <= 0)
+            return;
+
+        if (!animate || _searchAnimating)
+        {
+            StopSearchLayoutAnimation();
+            LogSearchField.Width = targetWidth;
+            LogSearchTranslate.X = targetX;
+            LogSearchTranslate.Y = targetY;
+            UpdateLogScrollBarInsets();
+            return;
+        }
+
+        double fromWidth = LogSearchField.ActualWidth > 0 ? LogSearchField.ActualWidth : targetWidth;
+        double fromX = LogSearchTranslate.X;
+        double fromY = LogSearchTranslate.Y;
+
+        // 动画从“当前视觉值”起跑；先把基准值写成起点，结束时再写回终点。
+        LogSearchField.Width = fromWidth;
+        LogSearchTranslate.X = fromX;
+        LogSearchTranslate.Y = fromY;
+
+        var duration = new Duration(TimeSpan.FromMilliseconds(SearchTransitionMilliseconds));
+        var easing = new CubicEase { EasingMode = EasingMode.EaseOut };
+        var storyboard = new Storyboard();
+
+        var widthAnimation = new DoubleAnimation
+        {
+            From = fromWidth,
+            To = targetWidth,
+            Duration = duration,
+            EasingFunction = easing,
+            // Width 会影响布局，WinUI 要求显式允许依赖动画，否则直接跳到终点。
+            EnableDependentAnimation = true,
+        };
+        Storyboard.SetTarget(widthAnimation, LogSearchField);
+        Storyboard.SetTargetProperty(widthAnimation, "Width");
+        storyboard.Children.Add(widthAnimation);
+
+        AddTranslateAnimation(storyboard, "X", fromX, targetX, duration, easing);
+        AddTranslateAnimation(storyboard, "Y", fromY, targetY, duration, easing);
+
+        storyboard.Completed += (_, _) =>
+        {
+            // 结束时把终点写回基准属性并停掉动画，后续缩放/重连才能继续直接改。
+            LogSearchField.Width = targetWidth;
+            LogSearchTranslate.X = targetX;
+            LogSearchTranslate.Y = targetY;
+            storyboard.Stop();
+            _searchLayoutStoryboard = null;
+            _searchAnimating = false;
+            UpdateLogScrollBarInsets();
+        };
+
+        _searchLayoutStoryboard = storyboard;
+        _searchAnimating = true;
+        storyboard.Begin();
+    }
+
+    private void AddTranslateAnimation(Storyboard storyboard, string property, double from, double to,
+        Duration duration, EasingFunctionBase easing)
+    {
+        var animation = new DoubleAnimation
+        {
+            From = from,
+            To = to,
+            Duration = duration,
+            EasingFunction = easing,
+        };
+        Storyboard.SetTarget(animation, LogSearchTranslate);
+        Storyboard.SetTargetProperty(animation, property);
+        storyboard.Children.Add(animation);
+    }
+
+    private void StopSearchLayoutAnimation()
+    {
+        _searchLayoutStoryboard?.Stop();
+        _searchLayoutStoryboard = null;
+        _searchAnimating = false;
+    }
+
+    /// <summary>取整条命令区相对日志区的位置（搜索框展开时的宽度目标）。命令栏没布局过时返回 false。</summary>
+    private bool TryGetCommandAreaRect(out Rect rect)
+    {
+        rect = default;
+        if (CommandBarGrid.ActualWidth <= 0 || CommandBarGrid.ActualHeight <= 0)
+            return false;
+
+        Point origin = CommandBarGrid.TransformToVisual(LogAreaGrid).TransformPoint(new Point(0, 0));
+        rect = new Rect(origin.X, origin.Y, CommandBarGrid.ActualWidth, CommandBarGrid.ActualHeight);
+        return true;
+    }
+
+    /// <summary>取命令输入框相对日志区的位置（搜索框展开时的目标矩形）。命令栏没布局过时返回 false。</summary>
+    private bool TryGetCommandInputRect(out Rect rect)
+    {
+        rect = default;
+        if (CommandBox.ActualWidth <= 0 || CommandBox.ActualHeight <= 0)
+            return false;
+
+        Point origin = CommandBox.TransformToVisual(LogAreaGrid).TransformPoint(new Point(0, 0));
+        rect = new Rect(origin.X, origin.Y, CommandBox.ActualWidth, CommandBox.ActualHeight);
+        return true;
+    }
+
 
     #region 命令建议（2026-10-14 需求：原版 MC 样式的命令建议框）
 
@@ -866,12 +1200,23 @@ public sealed partial class MainPage : Page
     private AccountViewModel? _serverDialogAccount;
     private int _serverDialogRevision = -1;
 
+    /// <summary>
+    /// 没打开的账号上排着的"后台自动登录"（2026-11-01 需求）：不建 ContentDialog，
+    /// 直接等 1 秒用记住的密码提交。一次只有一条，用列表只是防两条账号同时弹框。
+    /// </summary>
+    private readonly List<HeadlessAutoLogin> _headlessAutoLogins = [];
+
     private void OnServerDialogRequested(AccountViewModel account, MccDialogInfo info)
     {
         if (!ReferenceEquals(account, ViewModel.SelectedAccount))
         {
-            // 没选中它：先存在账号的 PendingDialog 里，切过去时补弹
-            account.WriteNote($"§8收到对话框但当前未选中该账号，已暂存（切换账号后补弹）：「{info.Title}」（编号 {info.Revision}）");
+            // 没选中它：先存在账号的 PendingDialog 里，切过去时补弹；
+            // 但勾了"自动登录"的账号不等用户切过去——后台填好密码，1 秒后直接提交
+            //（2026-11-01 用户要求：不在当前打开的账号窗口也要自动点登录）。
+            bool headless = TryScheduleHeadlessAutoLogin(account, info);
+            account.WriteNote(headless
+                ? $"§8收到对话框但当前未选中该账号：已填入记住的密码，1 秒后在后台自动提交（不用切过去）：「{info.Title}」（编号 {info.Revision}）"
+                : $"§8收到对话框但当前未选中该账号，已暂存（切换账号后补弹）：「{info.Title}」（编号 {info.Revision}）");
             return;
         }
 
@@ -880,6 +1225,8 @@ public sealed partial class MainPage : Page
 
     private void OnServerDialogClosed(AccountViewModel account, int revision)
     {
+        // 服务器自己把这条收回去了：排着的后台自动登录没意义了
+        CancelHeadlessAutoLogin(account, revision);
         account.ClearPendingDialog(revision);
 
         if (_serverDialog is { } dialog
@@ -905,7 +1252,11 @@ public sealed partial class MainPage : Page
     {
         if (XamlRoot is null)
         {
-            account.WriteNote($"§c无法弹出对话框输入框（窗口未就绪），已错过：「{info.Title}」（编号 {info.Revision}）");
+            // 窗口还没就绪（或已关）：能后台自动登录就先排上，别白白错过这条
+            if (TryScheduleHeadlessAutoLogin(account, info))
+                account.WriteNote($"§7窗口未就绪：已填入记住的密码，1 秒后在后台自动提交：「{info.Title}」（编号 {info.Revision}）");
+            else
+                account.WriteNote($"§c无法弹出对话框输入框（窗口未就绪），已错过：「{info.Title}」（编号 {info.Revision}）");
             return;
         }
 
@@ -928,7 +1279,20 @@ public sealed partial class MainPage : Page
         }
 
         if (!ReferenceEquals(account, ViewModel.SelectedAccount))
-            return; // 等弹窗的功夫用户切了账号：这条已经存在 PendingDialog 里
+        {
+            // 等弹窗的功夫用户切了账号：这条已经存在 PendingDialog 里——
+            // 支持自动登录的就改走后台（不然要等用户再切回来才点登录）
+            if (TryScheduleHeadlessAutoLogin(account, info))
+                account.WriteNote($"§8弹出对话框时切走了账号：已改为 1 秒后后台自动提交：「{info.Title}」（编号 {info.Revision}）");
+            return;
+        }
+
+        // 等弹窗的功夫它已经被后台自动登录提交 / 服务器收回：别再弹一条过期的
+        if (account.PendingDialog?.Revision != info.Revision)
+            return;
+
+        // 界面这条要弹出来了：撤掉后台计时器，交给弹窗自己的 ScheduleAutoLogin（避免提交两次）
+        CancelHeadlessAutoLogin(account, info.Revision);
 
         ServerDialogSession session = new()
         {
@@ -1008,7 +1372,7 @@ public sealed partial class MainPage : Page
             return;
 
         // "登录"类动作 = 第一个非取消动作（MCC 的动作从 1 开始编号）
-        int actionIndex = session.Info.Actions.FirstOrDefault(action => !action.IsCancel)?.Index ?? -1;
+        int actionIndex = DialogAutoLogin.FindLoginActionIndex(session.Info);
         if (actionIndex < 0)
             return;
 
@@ -1048,6 +1412,112 @@ public sealed partial class MainPage : Page
         catch
         {
             // 关不掉就算了，ShowAsync 那边会正常返回
+        }
+    }
+
+    /// <summary>一条排着的后台自动登录：账号 + 对话框 + 要提交的取值 + 计时器。</summary>
+    private sealed class HeadlessAutoLogin
+    {
+        public AccountViewModel Account = null!;
+        public MccDialogInfo Info = null!;
+        public Dictionary<string, string> Values = null!;
+        public int ActionIndex;
+        // 注意：Windows.System 里也有同名的 DispatcherQueueTimer，这里必须是 WinUI 的那个
+        public Microsoft.UI.Dispatching.DispatcherQueueTimer Timer = null!;
+    }
+
+    /// <summary>
+    /// 后台自动登录（2026-11-01 需求）：没打开的账号弹登录框时，不等用户切过去，
+    /// 与界面上那条一样"填好密码 → 1 秒后点登录"，只是不建 ContentDialog（建了就会抢当前账号的窗口，
+    /// 而 WinUI 同时只允许一个 ContentDialog）。
+    /// 条件与 <see cref="ScheduleAutoLogin"/> 一致：记住密码 + 勾了自动登录 + 真存了密码 + 有非取消动作；
+    /// 另外要求除密码外的输入项都自带非空初值——后台弹不出来也改不了，盲填空串只会白白失败一次，
+    /// 这种（比如要验证码的）仍按老规矩暂存，等切过去再让用户自己填。
+    /// 返回是否真的排上了计时器。
+    /// </summary>
+    private bool TryScheduleHeadlessAutoLogin(AccountViewModel account, MccDialogInfo info)
+    {
+        // 同一条已经排着（比如切账号/窗口未就绪时又走了一次）就别再排第二个计时器
+        if (_headlessAutoLogins.Any(task => ReferenceEquals(task.Account, account) && task.Info.Revision == info.Revision))
+            return true;
+
+        if (!account.RememberServerPassword || !account.AutoLoginServer)
+            return false;
+
+        if (account.ServerPassword is not { Length: > 0 } remembered)
+            return false;
+
+        if (!info.Inputs.Any(field => field.IsSecret))
+            return false; // 不是登录 / 密码类对话框，别替用户乱点
+
+        // "登录"类动作 = 第一个非取消动作（MCC 的动作从 1 开始编号）
+        int actionIndex = DialogAutoLogin.FindLoginActionIndex(info);
+        if (actionIndex < 0)
+            return false;
+
+        Dictionary<string, string>? values = DialogAutoLogin.TryBuildValues(info, remembered);
+        if (values is null)
+            return false;
+
+        Microsoft.UI.Dispatching.DispatcherQueueTimer timer = DispatcherQueue.CreateTimer();
+        HeadlessAutoLogin task = new()
+        {
+            Account = account,
+            Info = info,
+            Values = values,
+            ActionIndex = actionIndex,
+            Timer = timer,
+        };
+
+        _headlessAutoLogins.Add(task);
+        timer.Interval = TimeSpan.FromSeconds(1);
+        timer.IsRepeating = false;
+        timer.Tick += (_, _) => CompleteHeadlessAutoLogin(task);
+        timer.Start();
+        return true;
+    }
+
+    /// <summary>后台自动登录到点：没被界面接管、对话框还在同一条，就按记住的密码提交。</summary>
+    private void CompleteHeadlessAutoLogin(HeadlessAutoLogin task)
+    {
+        task.Timer.Stop();
+        _headlessAutoLogins.Remove(task);
+
+        AccountViewModel account = task.Account;
+        MccDialogInfo info = task.Info;
+
+        // 这一秒里用户切过来了：界面那条 ContentDialog 已经弹出（或正要弹），交给它自己的计时器
+        if (ReferenceEquals(_serverDialogAccount, account) && _serverDialogRevision == info.Revision)
+            return;
+
+        // 已经被提交 / 被服务器收回：什么都不做
+        if (account.PendingDialog?.Revision != info.Revision)
+            return;
+
+        if (!account.SubmitDialog(task.Values, task.ActionIndex))
+        {
+            account.WriteNote($"§c自动登录（后台）提交失败：对话框可能已经失效（编号 {info.Revision}）。");
+            return;
+        }
+
+        account.ClearPendingDialog(info.Revision);
+        account.WriteNote($"§7自动登录（后台）：账号未打开，已用记住的密码自动提交（编号 {info.Revision}）。");
+    }
+
+    /// <summary>撤掉排着的后台自动登录；<paramref name="revision"/> 小于 0 表示该账号的全部。</summary>
+    private void CancelHeadlessAutoLogin(AccountViewModel account, int revision = -1)
+    {
+        for (int i = _headlessAutoLogins.Count - 1; i >= 0; i--)
+        {
+            HeadlessAutoLogin task = _headlessAutoLogins[i];
+            if (!ReferenceEquals(task.Account, account))
+                continue;
+
+            if (revision >= 0 && task.Info.Revision != revision)
+                continue;
+
+            task.Timer.Stop();
+            _headlessAutoLogins.RemoveAt(i);
         }
     }
 

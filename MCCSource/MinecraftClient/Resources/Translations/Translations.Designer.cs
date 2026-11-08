@@ -5684,6 +5684,24 @@ namespace MinecraftClient {
         }
         
         /// <summary>
+        ///   Looks up a localized string similar to Window # {0} arrived without an open packet; the server&apos;s screen was reset. Please retry the command..
+        /// </summary>
+        internal static string extra_inventory_missing_open {
+            get {
+                return ResourceManager.GetString("extra.inventory_missing_open", resourceCulture);
+            }
+        }
+        
+        /// <summary>
+        ///   Looks up a localized string similar to Window # {0} arrived without an open packet; the screen was restored from its slot count. Close it to reset the server&apos;s screen..
+        /// </summary>
+        internal static string extra_inventory_missing_open_restored {
+            get {
+                return ResourceManager.GetString("extra.inventory_missing_open_restored", resourceCulture);
+            }
+        }
+        
+        /// <summary>
         ///   Looks up a localized string similar to Inventory # {0} opened: {1}.
         /// </summary>
         internal static string extra_inventory_open {

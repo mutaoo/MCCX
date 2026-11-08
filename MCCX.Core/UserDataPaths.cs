@@ -5,14 +5,16 @@ namespace MCCX.Core;
 /// <summary>
 /// 用户数据目录：账号库与配置/状态类文件统一放在程序目录下的 <c>UserData</c> 文件夹。
 ///
-/// <para>动机（用户 2026-10-05 要求）：升级新版时只需把 exe 目录整个换掉，
+/// <para>动机（用户 2026-10-05 要求）：升级新版时只需把程序目录整个换掉，
 /// 再把 <c>UserData</c> 这一个文件夹拷进去即可，不用在几十个文件里挑哪几个是数据。</para>
 ///
-/// <para>位置规则沿用原有语义：exe 目录可写就用它（保持"文件夹拷走就能用"的便携性），
+/// <para>位置规则：数据根可写就用它（保持"文件夹拷走就能用"的便携性），
 /// 不可写（装到 Program Files 等）就退到 %LOCALAPPDATA%\MCCX 下的同名子目录。
-/// 具体基准目录由 <see cref="AccountStore.DefaultDirectory"/> 决定。</para>
+/// 数据根由 <see cref="AccountStore.DefaultDirectory"/> 决定：默认是 exe 目录；
+/// 发布包（包根启动器 + <c>app\</c> + <c>UserData\</c>）取 exe 的上一级，
+/// 所以 <c>UserData</c> 始终与包根 <c>MCCX.exe</c> 平级。</para>
 ///
-/// <para>升级兼容：从旧版本（这些文件散落在 exe 目录里）首次启动时，
+/// <para>升级兼容：从旧版本（这些文件散落在程序目录根下）首次启动时，
 /// <see cref="EnsureReady"/> 会把它们<b>移动</b>进 UserData。已有同名目标文件则不覆盖，
 /// 避免把新版的数据用旧文件盖掉。</para>
 /// </summary>
@@ -23,7 +25,7 @@ public static class UserDataPaths
     public const string FolderName = "UserData";
 
     /// <summary>
-    /// 需要从旧位置（exe 目录根下）搬进 <see cref="Directory"/> 的文件名。
+    /// 需要从旧位置（程序目录根下）搬进 <see cref="Directory"/> 的文件名。
     /// 只搬这四个已知文件，程序目录里的其它文件（MCC 自带的 dll 等）一律不动。
     /// </summary>
     private static readonly string[] FlatFileNames =

@@ -9,10 +9,13 @@ namespace MCCX.Core;
 /// 账号列表以 JSON 组织，用随机生成的 AES-256-GCM 密钥加密后落盘；
 /// 该密钥本身用 Windows DPAPI（当前用户）保护，因此只有本机本账号能解密。
 ///
-/// 文件布局（优先 exe 同目录，保证"绿色便携"；该目录不可写时退到
+/// 文件布局（优先程序目录，保证"绿色便携"；该目录不可写时退到
 /// %LOCALAPPDATA%\MCCX；旧版本用 %APPDATA%\MCCX\，即改名前的 MccX）：
 ///   accounts.key  DPAPI 保护后的 32 字节 AES 密钥
 ///   accounts.dat  [1B 版本][12B nonce][16B tag][密文]
+///
+/// 程序目录 = 数据根：默认是 exe 所在目录；发布包（包根启动器 + app\ + UserData\）
+/// 取 exe 的上一级，见 <see cref="ResolveDataRoot"/>。
 ///
 /// 原子写入：先写 .tmp 再整体替换，避免断电产生半截文件。
 /// </summary>
@@ -66,19 +69,49 @@ public sealed class AccountStore : IDisposable
     }
 
     /// <summary>
-    /// 程序目录根（<b>不是</b>账号库目录）：账号库与配置类文件都在它下面的
+    /// 数据根（<b>不是</b>账号库目录）：账号库与配置类文件都在它下面的
     /// <see cref="UserDataPaths.FolderName"/> 子目录里，升级时只需拷那一个文件夹。
-    /// exe 所在目录；不可写时退到 %LOCALAPPDATA%\MCCX。
+    /// 默认是 exe 所在目录；发布包（包根启动器 + <c>app\</c> + <c>UserData\</c>）取 exe 的上一级，
+    /// 让包根一眼能看到 MCCX.exe 与 UserData；不可写时退到 %LOCALAPPDATA%\MCCX。
     /// </summary>
+    private static readonly string DataRoot = ResolveDataRoot();
+
+    /// <summary>数据根（见 <see cref="DataRoot"/>；名字保留历史语义：程序目录根）。</summary>
     public static string DefaultDirectory { get; } = ResolveDefaultDirectory();
 
-    /// <summary>%LOCALAPPDATA%\MCCX（exe 目录不可写时的备用位置；也是旧版迁移的来源之一）。</summary>
+    /// <summary>%LOCALAPPDATA%\MCCX（数据根不可写时的备用位置；也是旧版迁移的来源之一）。</summary>
     public static string FallbackDirectory { get; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MCCX");
 
-    /// <summary>true 表示 exe 目录不可写，账号库实际落在 <see cref="FallbackDirectory"/>。</summary>
+    /// <summary>true 表示数据根不可写，账号库实际落在 <see cref="FallbackDirectory"/>。</summary>
     public static bool UsingFallbackDirectory =>
-        !string.Equals(DefaultDirectory, AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), StringComparison.OrdinalIgnoreCase);
+        !string.Equals(DefaultDirectory, DataRoot, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>发布包布局标记：启动器在包根、主程序在 <c>app\</c> 里时，标记文件放在包根。</summary>
+    private const string LayoutMarkerName = ".mccx-layout";
+
+    /// <summary>
+    /// 解析数据根：默认 exe 目录；若上一级有 <see cref="LayoutMarkerName"/> 标记（发布包布局），取上一级。
+    /// 从源码直接跑 <c>bin\Debug\...\MCCX.exe</c> 时没有标记，行为与以前完全一致。
+    /// </summary>
+    private static string ResolveDataRoot()
+    {
+        string exeDirectory = AppContext.BaseDirectory.TrimEnd(
+            Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+        try
+        {
+            string? parent = Path.GetDirectoryName(exeDirectory);
+            if (!string.IsNullOrEmpty(parent) && File.Exists(Path.Combine(parent, LayoutMarkerName)))
+                return parent;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            _ = ex;
+        }
+
+        return exeDirectory;
+    }
 
     /// <summary>本次启动是否把旧的 %APPDATA%\MCCX 账号文件搬到了程序目录。</summary>
     public bool MigratedLegacyData { get; private set; }
@@ -91,17 +124,14 @@ public sealed class AccountStore : IDisposable
     public string StorageDirectory => _directory;
 
     /// <summary>
-    /// exe 目录能写就用它（保持"整个文件夹拷走就能用"的便携语义）；
+    /// 数据根能写就用它（保持"整个文件夹拷走就能用"的便携语义）；
     /// 只读位置（装到 Program Files、解压到受限目录）不能写就退到
     /// %LOCALAPPDATA%\MCCX，避免"加了账号、一重启就没了"。
     /// </summary>
     private static string ResolveDefaultDirectory()
     {
-        string exeDirectory = AppContext.BaseDirectory.TrimEnd(
-            Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-
-        if (IsWritable(exeDirectory))
-            return exeDirectory;
+        if (IsWritable(DataRoot))
+            return DataRoot;
 
         try
         {
@@ -111,11 +141,11 @@ public sealed class AccountStore : IDisposable
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
-            // 两个位置都不行：仍返回 exe 目录，让 Load/Persist 把真实错误写进 LastError
+            // 两个位置都不行：仍返回数据根，让 Load/Persist 把真实错误写进 LastError
             _ = ex;
         }
 
-        return exeDirectory;
+        return DataRoot;
     }
 
     /// <summary>写一个探针文件验证目录可写（比只看目录是否存在可靠：只读目录也存在）。</summary>

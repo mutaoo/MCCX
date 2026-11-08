@@ -111,6 +111,12 @@ public sealed class WindowBridgeBot : ChatBot
     /// <summary>玩家自己的物品栏占 36 格（背包 27 + 快捷栏 9）：窗口里排在最后，容器内容 = 总槽位数 - 36。</summary>
     private const int PlayerInventorySlots = 36;
 
+    /// <summary>
+    /// 补出来的窗口（服务端只发了内容、没发"打开窗口"包，见 McClient.RecoverWindowWithoutOpenPacket）
+    /// 没有标题，界面上用这个名字兜底。
+    /// </summary>
+    private const string UntitledWindowName = "服务器窗口";
+
     private readonly object _gate = new();
 
     /// <summary>窗口 → 格子 → 内容签名（算增量用）；光标那一摞记在键 <see cref="MccWindowSlot.CursorIndex"/> 上。</summary>
@@ -322,11 +328,15 @@ public sealed class WindowBridgeBot : ChatBot
         if (!TryGetContainer(windowId, out Container container))
             return; // 还没进服 / 物品信息没到
 
+        string title = MccItemName.StripColor(container.Title);
+        if (title.Length == 0)
+            title = UntitledWindowName;
+
         MccWindowInfo info = new()
         {
             Id = windowId,
             Full = full,
-            Title = MccItemName.StripColor(container.Title),
+            Title = title,
             Type = container.Type.ToString(),
         };
 

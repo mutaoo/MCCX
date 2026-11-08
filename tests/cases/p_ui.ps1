@@ -31,20 +31,50 @@ Assert-True ($hit -and ($line -match '用户数据目录：')) '日志显示用�
 Write-Host "  -> $line"
 
 # 1b) 2026-10-16 需求（第三轮）：没连上服务器时，命令栏（常用命令 / 输入框 / 发送 / 清空日志）
-#     和日志搜索框整块收起，要连上服务器才显示（连上之后的样子在 g_search 里验）。
-#     这几条正好跑在"刚起来、未连接"的状态下，所以放在这里最省事。
+#     不可操作，要连上服务器才能用（连上之后的样子在 g_search 里验）。
+#     2026-11-06 改版：命令栏不再收起，而是保留布局 + 子控件 IsEnabled=False；日志搜索框离线也显示，
+#     并展开到整条命令区（宽度覆盖整行，高度同命令输入框）。这几条正好跑在"刚起来、未连接"的状态下。
 $stateOff = ''
 try { $stateOff = Get-WindowStateText $script:AppRoot } catch { }
 Assert-True ($stateOff -eq '未连接') '起步就是未连接' "实际='$stateOff'"
-foreach ($id in @('CommandBox', 'LogSearchBox', 'FrequentCommandsButton')) {
-    $el = $null
-    try { $el = Find-ById $script:AppRoot $id } catch { $el = $null }
-    Assert-True ($null -eq $el) "未连接时 $id 已收起"
+$cmdOff = $null
+try { $cmdOff = Find-ById $script:AppRoot 'CommandBox' } catch { $cmdOff = $null }
+$searchOff = $null
+try { $searchOff = Find-ById $script:AppRoot 'LogSearchBox' } catch { $searchOff = $null }
+Assert-True ($null -ne $cmdOff) '未连接时命令行输入框仍在自动化树里（只禁用，不收起）'
+Assert-True ($null -ne $searchOff) '未连接时日志搜索框仍显示（展开态）'
+if ($cmdOff) {
+    Assert-True (-not $cmdOff.Current.IsEnabled) '未连接时命令行输入框禁用' "IsEnabled=$($cmdOff.Current.IsEnabled)"
+}
+if ($searchOff) {
+    Assert-True ($searchOff.Current.IsEnabled) '未连接时日志搜索框仍可输入' "IsEnabled=$($searchOff.Current.IsEnabled)"
 }
 foreach ($name in @('发送', '清空日志', '常用命令')) {
     $btn = $null
     try { $btn = Get-UiButton $name } catch { $btn = $null }
-    Assert-True ($null -eq $btn) "未连接时「$name」按钮已收起"
+    Assert-True ($null -ne $btn) "未连接时「$name」按钮仍在自动化树里（只禁用，不收起）"
+    if ($btn) {
+        Assert-True (-not $btn.Current.IsEnabled) "未连接时「$name」按钮禁用" "IsEnabled=$($btn.Current.IsEnabled)"
+    }
+}
+# 展开态几何（2026-11-06 第二轮）：宽度 == 整条命令区（「常用命令」左边缘 →「清空日志」右边缘），
+# 顶边/高度仍与命令输入框一致；±3 设备像素容忍边框/取整。
+if ($cmdOff -and $searchOff) {
+    $leftBtn = $null; $rightBtn = $null
+    try { $leftBtn = Get-UiButton '常用命令' } catch { $leftBtn = $null }
+    try { $rightBtn = Get-UiButton '清空日志' } catch { $rightBtn = $null }
+    if ($leftBtn -and $rightBtn) {
+        $rl = $leftBtn.Current.BoundingRectangle
+        $rr = $rightBtn.Current.BoundingRectangle
+        $rc = $cmdOff.Current.BoundingRectangle
+        $rs = $searchOff.Current.BoundingRectangle
+        Assert-True ([Math]::Abs($rl.X - $rs.X) -le 3 `
+            -and [Math]::Abs(($rr.X + $rr.Width) - ($rs.X + $rs.Width)) -le 3 `
+            -and [Math]::Abs($rc.Y - $rs.Y) -le 3 `
+            -and [Math]::Abs($rc.Height - $rs.Height) -le 3) `
+            '未连接时搜索框展开到整条命令区（左右贴边、高度同命令输入框）' `
+            ("area=({0}..{1}) cmdY={2} h={3} search=({4},{5},{6},{7})" -f $rl.X, ($rr.X + $rr.Width), $rc.Y, $rc.Height, $rs.X, $rs.Y, $rs.Width, $rs.Height)
+    }
 }
 # 对照：和"连不连都得在"的控件分开验，免得整块界面塌了也被当成"收起来了"
 foreach ($name in @('连接', '断开', '添加账号')) {

@@ -8,7 +8,7 @@
 | 目录 | 内容 |
 | --- | --- |
 | `lib\` | 公共库：`uia.ps1`（UI Automation 助手）、`autolib.ps1`（启动/定位/关闭程序、断言、RCON、截图） |
-| `suites\` | 完整套件：`run6.ps1`（`p_*` / `v_ui2` 回归编排）、`run_g.ps1`（日志区/键盘/连接流程回归编排：`g_fixes`/`g_msgfilter`/`g_view`/`g_refill`/`g_dialog`/`g_walk`/`g_logkeys`/`g_logcn`/`g_connlock`/`g_logswitch`/`g_autocmd`/`g_loginopt`/`g_useitem`）、`v_ui7.ps1`（UI 需求验收）、`shot_readme.ps1`（README 8 图重拍）、`dump_accounts.ps1`（账号库解密核对）、`ver_check.ps1`（标题栏取证）、`run_p.ps1`（单用例运行器） |
+| `suites\` | 完整套件：`run6.ps1`（`p_*` / `v_ui2` 回归编排）、`run_g.ps1`（日志区/键盘/连接流程回归编排：`g_fixes`/`g_msgfilter`/`g_view`/`g_refill`/`g_dialog`/`g_walk`/`g_logkeys`/`g_logcn`/`g_connlock`/`g_logswitch`/`g_autocmd`/`g_loginopt`/`g_useitem`）、`v_ui7.ps1`（UI 需求验收）、`shot_readme.ps1`（README 8 图重拍）、`dump_accounts.ps1`（账号库解密核对）、`ver_check.ps1`（标题栏取证）、`run_p.ps1`（单用例运行器）；`g_search` / `g_container` / `g_inventory` 单独跑，不在编排内 |
 | `cases\` | 具体用例（`p_*` / `v_ui*` / `d_*` / `g_*`），由 `run_p.ps1` 或 `run6.ps1` / `run_g.ps1` 调用 |
 | `artifacts\` | **输出目录（已 gitignore）**：用例日志 `*_out.txt`、临时截图、临时账号库暂存 |
 | `tools\` | `Test-TestScripts.ps1`（总自检：语法 + 编码 + 路径 + 用例/套件清点）、`Migrate-TestScripts.ps1`（2026-10-03 迁移用的可重复脚本，dry-run 优先）、`Capture-CancelRepro.ps1`（附加到运行中的窗口抓"取消密码框后无限重连"现场） |
@@ -21,6 +21,10 @@
    ```powershell
    dotnet build "...\MCCX\MCCX.slnx" -c Debug
    ```
+   **测的是构建产物，不是发布包**：Debug / Release 目录里没有 `.mccx-layout` 标记，
+   数据根就是 exe 所在目录（`UserData\` 与 exe 平级）。发布包是另一套布局
+   （包根 `MCCX.exe` 启动器 + `app\` + `UserData\`，见 `other\MCCX开发文档.md` §12），
+   本套件不覆盖启动器；改布局后要另做一次手工冒烟（双击包根 exe → 数据落包根 `UserData\`）。
 2. **PowerShell 5.1 执行**，脚本含中文且多为 **UTF-8 with BOM**（迁移时按原编码保留）；
    用 `-ExecutionPolicy Bypass -File` 运行。部分脚本（如 `dump_accounts.ps1`，DPAPI 解密钥）
    **必须用 `pwsh.exe`**。
@@ -51,14 +55,23 @@
    **还会再切一次**——窗口没被激活时那条消息会被丢掉，重新激活又按进程记住的中文生效
    （2026-10-16 复现过：只靠启动时切一次，段的 Tab/Esc 断言会红）。
    新写打字用例时用 `Start-App` 起的实例即可，不要自己去改输入法。
-7. **命令栏和日志搜索框只在连上服务器后才显示**（2026-10-16 需求）：未连接时「常用命令 / 输入框 /
-   发送 / 清空日志」和日志搜索框整块收起（UIA 里连节点都没有）。所以：
+7. **命令栏要连上服务器才可用；日志搜索框一直显示**（2026-10-16 需求，2026-11-06 改版）：
+   未连接时「常用命令 / 输入框 / 发送 / 清空日志」**仍在自动化树里**，但整行透明且
+   `IsEnabled=false`（点不动、Tab 也进不去），所以"操作命令栏"的用例仍要先开一个测试会话：
    - 要摸这些控件的用例（`g_search` / `g_new`）得先开一个测试会话：
      `Enter-TestSession -User <专用账号>`（起本地测试服 → 记账号列表基线 → 加账号 → 选中 → 连接），
      收尾 `Exit-TestSession -Session $s`（断开 → 删账号 → 核对列表回到基线）。两个助手都在
      `autolib.ps1`，只用 UIA 点界面、不碰用户已有账号（流程同 `p_multi` / `g_walk` 里的副本）。
-   - `Clear-Log` 在未连接时会打印 `[ui] 未连接：清空日志按钮已隐藏，跳过清日志` 后跳过：这类用例
-     别再把"清完日志再断言"当唯一依据（`p_port` 的几处就是这种情况，断言本身仍成立）。
+   - **日志搜索框离线也显示**：断开后它从右下角展开到整个命令区（宽度覆盖「常用命令 → 清空日志」
+     整行，高度同命令输入框；只留底边框、提示居中），连上后动画收回右下角。找 `LogSearchBox`
+     不必先连接；只想读节点、不输入的断言可以离线跑。
+   - **离线展开态点进去不能消失 / 不能白底**（2026-11-07）：搜索框正好等于日志区宽度，
+     「命中 n/N」徽标**不能占布局列**（一占就把整块撑宽、TextBox 被挤出可视区，UIA 直接报
+     Empty/offscreen），现在只做 `RenderTransform` 偏移（展开态贴框顶左角上方、收起态贴框左侧）；
+     TextBox 的 `TextControlBackground*` 资源在展开态被覆盖成透明，焦点态只剩底边框。
+     `g_search.ps1` 在离线段钉住这三条（输入后框仍上屏、焦点前后底色 RGB 变化 ≤8、出现命中徽标）。
+   - `Clear-Log` 现在按 `IsEnabled` 判断：未连接时打印 `[ui] 未连接：清空日志按钮不可用，跳过清日志`
+     后跳过。这类用例别再把"清完日志再断言"当唯一依据（`p_port` 的几处就是这种情况，断言本身仍成立）。
    - 键盘（SendKeys）用例抢不到前台时会打印 `[skip]` 跳过那几条断言（不是失败）：
      系统前台被别的进程占着时（实测 `GameInputSvc`）按键会打进别的窗口。
    - 连上之后的日志断言用 `Assert-Log`：它**先轮询最新一屏，读不到会往回翻几屏**再判失败
@@ -177,8 +190,10 @@ pwsh -ExecutionPolicy Bypass -File tests\cases\g_new.ps1
 
 # 2026-10-14 日志搜索（搜索框占位/匹配计数/清空/放大镜图标）+ 命令输入框占位文案 + 命令建议浮层
 # 2026-10-16：命令栏和搜索框都要连上服务器才显示——先钉"未连接时整块收起"，再 Enter-TestSession
+# 2026-11-06：离线改钉"命令栏保留布局但禁用、搜索框展开覆盖整条命令区"，再连测试服
 # 连本地测试服（专用账号 MccXSearchTest，测完自删还原）跑其余断言；抢不到前台时键盘段报 [skip]
 # 2026-10-16 追加：清空搜索后视图必须回到最底的最新日志（用户反馈：筛选结束后总停在顶部/第一条命中）
+# 2026-11-07 追加：离线展开态输入后搜索框仍上屏、焦点前后底色一致（不变白底）、出现命中徽标
 pwsh -ExecutionPolicy Bypass -File tests\cases\g_search.ps1
 
 # 2026-10-16 服务器容器窗口（箱子 / 商店 GUI）：摆箱子（RCON）+ MCC 内部命令 /useitem 打开 →
@@ -233,7 +248,7 @@ pwsh -ExecutionPolicy Bypass -File tests\cases\g_connlock.ps1
 # 专用账号 TestLogSw 测完自删（实测：SUMMARY g_logswitch FAILURES=0）
 pwsh -ExecutionPolicy Bypass -File tests\cases\g_logswitch.ps1
 
-# 2026-10-22 「自动指令」端到端（弹层里多条指令，各自间隔 / 进服立即执行 / 执行方式与次数 / 每条日志开关）：
+# 2026-10-22 「自动指令」端到端（弹层里多条指令，各自启用开关 / 间隔 / 进服立即执行 / 执行方式与次数 / 每条日志开关）：
 # A 新建测试账号连本地测试服 → 弹层里新建两行（第 1 行 /me acc_one、间隔 2 秒、勾进服立即执行；
 #   第 2 行 /me acc_two、间隔 6 秒、不勾）→ 开总开关；
 #   A9 专测「先连上再开开关也立刻生效」——MCC 的 AfterGameJoined 早过去了，靠会话层补 NotifyGameJoined()；
@@ -241,7 +256,8 @@ pwsh -ExecutionPolicy Bypass -File tests\cases\g_logswitch.ps1
 # C 定时循环：7 秒窗口里 2 秒那条至少两次（服务器回显计数）；
 # D 每条自己的日志开关：两行都关掉后不再出现 [自动指令] 过程日志，但服务器回显照旧（指令照发）；
 #   只把第 1 行打开，日志就只恢复第 1 行的；
-# E 落盘：重启程序后两行文本 / 间隔 / 两个「进服立即执行」/ 两条日志开关 / 总开关都还在；
+#   D4 每条自己的执行开关：关掉第 1 行后只有它停，第 2 行照常执行；
+# E 落盘：重启程序后两行文本 / 间隔 / 两个「进服立即执行」/ 每条执行开关 / 两条日志开关 / 总开关都还在；
 # F 执行方式与次数 + MCC 内部命令：`/send`（MCC 内部命令，不是服务器指令）能执行（服务器回显
 #   出现、且没有"未知命令"）；「只执行一次」16 秒里只发一遍；次数=2 的那条发两遍后停
 #   （日志里有「已执行完设置次数」）。
@@ -278,9 +294,13 @@ pwsh -ExecutionPolicy Bypass -File tests\cases\g_theme.ps1
 pwsh -ExecutionPolicy Bypass -File tests\suites\v_ui7.ps1
 
 # README 8 图重拍（三处账号库备份/移除/还原 + MD5 校验 + 敏感词断言；本地测试服在跑就直接用、没跑自己起）
+#   2026-11-05：脚本开头先 Stop-App 清场 —— 只换库文件不够，Start-App 看到已有 MCCX 实例会直接附着，
+#   旧实例内存里仍是真实账号（实测列表变成 13 真实 + 3 测试，且 02 截图会带出真实账号/服务器）。
+#   现在空库启动后还会断言列表必须为空，不为空立即中止，源头上避免真实数据进截图。
 #   2026-10-19：脚本先换空账号库再启动 —— 启动时列表里一个账号都没有，MainViewModel 那几条
 #   启动日志（含"用户数据目录：<本机路径>"）没有账号可写，画面天然干净；原来那句点「清空日志」
-#   已删掉（命令栏与日志搜索 2026-10-16 起只在连上服务器后才显示，离线时截不到那个按钮）。
+#   已删掉（2026-11-06 起离线时按钮仍在但禁用，`Clear-Log` 会自动跳过；日志搜索框会展开在
+#   命令输入框的位置，离线截图里出现属预期）。
 #   截前加了兜底断言：UIA 读到的当前账号日志里只要出现盘符路径就中止，绝不让本机路径进截图。
 #   想再加一张「背包面板」的试过了、暂时没成：点开面板后 UIA 里能看到格子（如 `格子 36：钻石剑`），
 #   但格子和「关闭」按钮的 BoundingRectangle 是 NaN（IsOffscreen=true），屏幕截图和 PrintWindow

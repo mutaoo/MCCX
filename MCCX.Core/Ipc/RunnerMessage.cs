@@ -11,7 +11,7 @@ namespace MCCX.Core.Ipc;
 /// <c>mouse</c> / <c>fishing</c> / <c>autorefill</c> / <c>walk</c> / <c>autocmd</c> / <c>msgfilter</c> / <c>reconnect</c> /
 /// <c>logswitch</c> / <c>view</c> / <c>look</c> / <c>dialog</c> / <c>dlgcancel</c> / <c>wclick</c> / <c>quit</c>
 /// 子 → 父（事件）：<c>ready</c> / <c>log</c> / <c>state</c> / <c>joined</c> / <c>error</c> /
-/// <c>dialog</c> / <c>dlgend</c> / <c>window</c> / <c>winend</c>
+/// <c>dialog</c> / <c>dlgend</c> / <c>window</c> / <c>winend</c> / <c>vitals</c> / <c>serverport</c>
 ///
 /// 字段名用短名是为了让高频日志行尽量短（子进程日志逐行走管道）。
 /// </summary>
@@ -72,6 +72,18 @@ public sealed class RunnerMessage
     public const string EvtJoined = "joined";
     public const string EvtError = "error";
 
+    /// <summary>
+    /// 玩家血量 / 饥饿值更新（2026-10-31 需求）。Text 是 <c>{"h":20,"f":18}</c>，
+    /// 两个值都是 0-20（血量可带半颗心的小数）。
+    /// </summary>
+    public const string EvtVitals = "vitals";
+
+    /// <summary>
+    /// 自动重连按 SRV 记录解析出新的服务器端口（服务器换端口后自动跟随）。
+    /// 端口是十进制文本，放在 <see cref="Text"/> 字段（与其它事件走的 Emit(type, text) 一致）。
+    /// </summary>
+    public const string EvtServerPort = "serverport";
+
     /// <summary>服务器弹出对话框（载荷是 <c>MccDialogInfo</c> 的 JSON，放在 Text 字段）。</summary>
     public const string EvtDialog = "dialog";
 
@@ -114,6 +126,13 @@ public sealed class RunnerMessage
 
     [JsonPropertyName("ver")]
     public string? Version { get; set; }
+
+    /// <summary>
+    /// 客户端标识（2026-11-05）：取值见 <c>MCCConnectionOptions.BrandMode*</c>，
+    /// 0 = 跟随全局默认（老版本子进程不认这个字段时也是 0，行为不变）。
+    /// </summary>
+    [JsonPropertyName("brand")]
+    public int Brand { get; set; }
 
     [JsonPropertyName("on")]
     public bool On { get; set; }

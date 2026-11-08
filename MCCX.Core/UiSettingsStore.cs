@@ -28,6 +28,17 @@ public static class UiSettingsStore
         /// </summary>
         [JsonPropertyName("debugMode")]
         public bool DebugMode { get; set; }
+
+        /// <summary>
+        /// 客户端标识（<c>minecraft:brand</c>，2026-11-03）。取值 <c>vanilla</c> / <c>mcc</c> / <c>empty</c>。
+        ///
+        /// 起因：mcip.mcyyy.com（Tardis 多版本层）只给 brand 为 <c>vanilla</c> 的客户端下发
+        /// <c>Open Screen</c>，对 MCC 默认的 "Minecraft-Console-Client/版本" 只发
+        /// <c>Container Set Content</c>，于是服务端界面永远不弹（还会让服务端一直认为界面开着）。
+        /// 默认 <c>vanilla</c>，保证装好就能正常显示服务端容器界面。
+        /// </summary>
+        [JsonPropertyName("brandInfo")]
+        public string BrandInfo { get; set; } = BrandInfoVanilla;
     }
 
     private const string FileName = "ui-settings.json";
@@ -123,4 +134,27 @@ public static class UiSettingsStore
 
     /// <summary>写"调试模式"开关。</summary>
     public static void WriteDebugMode(bool enabled) => Write(d => d.DebugMode = enabled);
+
+    /// <summary>brand=vanilla：与官方客户端一致，兼容性最好（默认）。</summary>
+    public const string BrandInfoVanilla = "vanilla";
+
+    /// <summary>brand=mcc：MCC 原始标识 "Minecraft-Console-Client/版本"。</summary>
+    public const string BrandInfoMcc = "mcc";
+
+    /// <summary>brand=empty：完全不发送 brand 插件消息。</summary>
+    public const string BrandInfoEmpty = "empty";
+
+    /// <summary>读客户端标识；没有文件 / 文件坏了 / 值不认识一律按 vanilla。</summary>
+    public static string ReadBrandInfo() => NormalizeBrandInfo(Read().BrandInfo);
+
+    /// <summary>写客户端标识（只接受 vanilla / mcc / empty，其它值按 vanilla 存）。</summary>
+    public static void WriteBrandInfo(string? value) => Write(d => d.BrandInfo = NormalizeBrandInfo(value));
+
+    /// <summary>把外部传入的客户端标识收敛成三个合法值之一。</summary>
+    private static string NormalizeBrandInfo(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        BrandInfoMcc => BrandInfoMcc,
+        BrandInfoEmpty => BrandInfoEmpty,
+        _ => BrandInfoVanilla,
+    };
 }

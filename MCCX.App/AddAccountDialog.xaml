@@ -23,7 +23,7 @@
                  IsSpellCheckEnabled="False"
                  IsTextPredictionEnabled="False"
                  Header="服务器"
-                 PlaceholderText="IP 或域名（可写 域名:端口）"
+                 PlaceholderText="域名 或 IP（可写 域名:端口）"
                  AutomationProperties.Name="添加服务器" />
         <TextBox x:Name="NewPortBox"
                  IsSpellCheckEnabled="False"

@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using MCCX_App.Logging;
 
 namespace MCCX_App.ViewModels;
 
@@ -12,6 +13,7 @@ public sealed class LogEntry : INotifyPropertyChanged
 {
     private string _text;
     private int _totalCount = 1;
+    private IReadOnlyList<LogRun>? _coloredRuns;
 
     public LogEntry(string text, string raw)
     {
@@ -42,6 +44,16 @@ public sealed class LogEntry : INotifyPropertyChanged
 
     /// <summary>MCC 输出的原始文本（带 § 颜色码），供后续按级别过滤使用。</summary>
     public string Raw { get; }
+
+    /// <summary>
+    /// 按服务器推送的 § 颜色码拆好的分段（2026-10-31 需求：日志按服务器颜色显示）。
+    /// <para>
+    /// 懒解析：只有真正显示出来的那几十行才会走到这里；拼起来的纯文本与
+    /// <see cref="BaseText"/> 逐字符一致（渲染前还会再校验一次，见 MainPage.Log.cs）。
+    /// 合并出来的 " xN" 后缀不在 <see cref="Raw"/> 里，由渲染方补一段默认色。
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<LogRun> ColoredRuns => _coloredRuns ??= LogLineFormat.Parse(Raw);
 
     public event PropertyChangedEventHandler? PropertyChanged;
 

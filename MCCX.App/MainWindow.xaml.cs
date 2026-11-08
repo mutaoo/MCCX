@@ -86,6 +86,23 @@ public sealed partial class MainWindow : Window
     /// <summary>「设置」菜单里 Debug 模式的状态文字：标签 + 空格 + 开/关。</summary>
     private static string DebugModeText(bool on) => on ? "Debug 模式 开" : "Debug 模式 关";
 
+    /// <summary>
+    /// 客户端标识（<c>minecraft:brand</c>）选择（2026-11-03）：存进 ui-settings.json，
+    /// 由 MCCSession 在构造 McClient 前读走，所以对下一次（重）连生效。
+    /// 三个子项用 <c>Tag</c> 带值，handler 不关心具体是哪个子项。
+    /// </summary>
+    private void BrandInfoItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: string value })
+            return;
+
+        UiSettingsStore.WriteBrandInfo(value);
+        UpdateBrandInfoText();
+    }
+
+    /// <summary>把「客户端标识」子菜单标题回填成当前值（存储值是唯一事实源）。</summary>
+    private void UpdateBrandInfoText() => BrandInfoItem.Text = "客户端标识：" + UiSettingsStore.ReadBrandInfo();
+
     /// <summary>应用主题（不动设置文件，启动时用）。</summary>
     private void ApplyThemeCore(bool darkMode)
     {
@@ -167,6 +184,7 @@ public sealed partial class MainWindow : Window
 
         // Debug 模式状态文字回填上次的值（必须在 InitializeComponent 之后：XAML 已建好该 MenuFlyoutItem）
         DebugModeItem.Text = DebugModeText(ReadStoredDebugMode());
+        UpdateBrandInfoText();
 
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);

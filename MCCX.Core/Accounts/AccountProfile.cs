@@ -21,6 +21,13 @@ public sealed class AccountProfile
     /// <summary>Minecraft 版本，"auto" 表示连接时 Ping 探测。</summary>
     public string MinecraftVersion { get; set; } = "auto";
 
+    /// <summary>
+    /// 客户端标识（<c>minecraft:brand</c>，2026-11-05 需求：按账号覆盖全局设置）。
+    /// 0 = 跟随全局默认（ui-settings.json 里的「客户端标识」），1 = vanilla，2 = mcc，3 = empty。
+    /// 老账号库没有该字段时按 0 读入，行为与升级前完全一致。
+    /// </summary>
+    public int BrandMode { get; set; }
+
     /// <summary>列表里显示的名字，保存时若为空会回填为 <see cref="Username"/>。</summary>
     public string DisplayName { get; set; } = string.Empty;
 
@@ -59,7 +66,7 @@ public sealed class AccountProfile
     public bool AutoCommandsEnabled { get; set; }
 
     /// <summary>
-    /// 自动指令表（2026-10-22 需求）：每条各自带间隔（秒）与"进服立即执行"；
+    /// 自动指令表（2026-10-22 需求）：每条各自带间隔（秒）、自己的执行开关与"进服立即执行"；
     /// 老账号库没有该字段时为空表，不影响读取。
     /// </summary>
     public List<AutoCommandDefinition> AutoCommands { get; set; } = [];
@@ -163,6 +170,7 @@ public sealed class AccountProfile
         ServerHost = other.ServerHost;
         Port = other.Port;
         MinecraftVersion = other.MinecraftVersion;
+        BrandMode = other.BrandMode;
         DisplayName = other.DisplayName;
         Credential = other.Credential;
         AttackFilterMode = other.AttackFilterMode;
